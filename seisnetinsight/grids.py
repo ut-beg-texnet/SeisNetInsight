@@ -43,6 +43,17 @@ def _clip_to_aoi(df: pd.DataFrame, params: GridParameters) -> pd.DataFrame:
     return df.loc[mask].copy()
 
 
+def _filter_stations(stations: pd.DataFrame) -> pd.DataFrame:
+    """Drop stations from filtered networks (e.g., AM) when that metadata is available."""
+    if stations is None or stations.empty:
+        return stations
+    for col in ("Network Code", "network_code", "network"):
+        if col in stations.columns:
+            mask = stations[col].astype(str).str.upper() != "AM"
+            return stations.loc[mask].copy()
+    return stations
+
+
 def generate_grid(params: GridParameters) -> GridDefinition:
     lats = np.arange(params.lats[0], params.lats[1] + params.grid_step, params.grid_step)
     lons = np.arange(params.lons[0], params.lons[1] + params.grid_step, params.grid_step)
@@ -60,6 +71,12 @@ def _haversine(points_a: np.ndarray, points_b: np.ndarray) -> np.ndarray:
     lat2 = b[None, :, 0]
     h = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
     return 2 * EARTH_RADIUS_KM * np.arctan2(np.sqrt(h), np.sqrt(1 - h))
+
+
+def _flat_distance_km(point_lat: float, point_lon: float, coords: np.ndarray) -> np.ndarray:
+    """Planar distance approximation (deg -> km) to mirror legacy notebook behavior."""
+    delta = coords - np.array([[point_lat, point_lon]])
+    return np.hypot(delta[:, 0], delta[:, 1]) * 111.0
 
 
 def _progress_wrapper(progress: Optional[Callable[[float, str], None]], fraction: float, message: str) -> None:
@@ -141,7 +158,7 @@ def compute_subject_grids(
 
 def _station_subset(stations: pd.DataFrame, event_lat: float, event_lon: float, max_distance_km: float) -> pd.DataFrame:
     coords = stations[["latitude", "longitude"]].to_numpy()
-    d = _haversine(np.array([[event_lat, event_lon]]), coords)[0]
+    d = _flat_distance_km(event_lat, event_lon, coords)
     mask = d <= max_distance_km
     if mask.sum() < 2:
         return stations.iloc[0:0]
@@ -170,7 +187,7 @@ def compute_gap_grid(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> pd.DataFrame:
     events = _clip_to_aoi(events, params)
-    stations = _clip_to_aoi(stations, params)
+    stations = _filter_stations(_clip_to_aoi(stations, params))
     if events.empty or stations.empty:
         raise ValueError("Events and stations data must be provided to compute gap grids.")
 
@@ -288,7 +305,7 @@ def merge_grids(*frames: pd.DataFrame) -> pd.DataFrame:
         if base is None:
             base = frame.copy()
         else:
-            base = base.merge(frame, on=["latitude", "longitude"], how="outer")
+            base = base.merge(frame, on=["latitude", "longitude"], how="inner")
     if base is None:
         raise ValueError("At least one grid frame must be provided.")
     base.sort_values(["latitude", "longitude"], inplace=True)
