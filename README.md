@@ -20,7 +20,7 @@ pip install .
 
 This installs the `seisnetinsight` package along with the `seisnetinsight-app` console script for the Streamlit interface.
 
-## Running the Streamlit app
+## Running the web app
 
 After installation, launch the interface with:
 
@@ -38,25 +38,50 @@ The UI is divided into three sections:
 <img width="600" height="600" alt="Screenshot 2025-10-31 182146" src="https://github.com/user-attachments/assets/4ad14cc1-7041-4b1e-ab58-414b401d17c5" />
 
 ## Programmatic usage
-
+For more details see the examples in the notebook folder
 ```python
-from seisnetinsight import (
-    default_parameters,
-    generate_grid,
-    compute_subject_grids,
-    compute_gap_grid,
-    compute_swd_grid,
+from seisnetinsight.config import GridParameters
+from seisnetinsight.data import load_events, load_stations, load_swd_wells
+from seisnetinsight.grids import (
     compute_composite_index,
+    compute_gap_grid,
+    compute_subject_grids,
+    compute_swd_grid,
+    generate_grid,
+    merge_grids,
 )
 
-params = default_parameters()
-# events_df, stations_df, swd_df are pandas DataFrames with standard columns
+bna_path = Path("../sample_files/midland.bna")
+bna_bytes = bna_path.read_bytes()
 
+SWD_COLUMN_MAP = {
+    "latitude": "latitude_wgs84",
+    "longitude": "longitude_wgs84",
+    "volume": "SUM_injected_liquid_BBL",
+}
+
+PARAMS = GridParameters()
+
+# events_df, stations_df, swd_df are pandas dataframes with latitude and longitude columns (more details in the notebooks folder)
 grid = generate_grid(params)
-subjects = compute_subject_grids(events_df, stations_df, grid, params)
-gap = compute_gap_grid(events_df, stations_df, grid, params)
-swd = compute_swd_grid(swd_df, grid, params)
-combined = compute_composite_index(subjects.merge(gap, on=["latitude", "longitude"]).merge(swd, on=["latitude", "longitude"]), params)
+
+subject_df = load_or_compute("subject",
+    lambda: compute_subject_grids(events_df, stations_df, grid, params), overwrite=False)
+
+gap_df = load_or_compute(
+    "gap", lambda: compute_gap_grid(events_df, stations_df, grid, params), overwrite=False)
+
+swd_grid = compute_swd_grid(swd_df, grid, params)
+swd_grid = load_or_compute(
+    "swd", lambda: compute_swd_grid(swd_df, grid, params), overwrite=False)
+
+merged = merge_grids(subject_df, gap_df, swd_grid)
+composite_grid_df = load_or_compute(
+    "composite",
+    lambda: compute_composite_index(
+        merged,
+        params),
+    overwrite=False)
 ```
 
 # Output Examples
