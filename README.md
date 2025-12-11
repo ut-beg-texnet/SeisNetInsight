@@ -37,6 +37,9 @@ The UI is divided into three sections:
 ## GUI Overview:
 ![seisnetinsight_data_loadding_short](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
 
+### Export the Maps to Google Earth
+<img width="1898" height="965" alt="earth_web" src="https://github.com/user-attachments/assets/59b3c58f-eb04-486a-8253-76148a22bbcb" />
+
 ## Programmatic usage
 For more details see the examples in the notebook folder
 ```python
