@@ -9,8 +9,8 @@ The package exposes utilities for:
 - Loading and validating seismic event, station, and SWD well catalogues.
 - Generating subject proximity (primary/secondary), ΔGap90, and SWD influence grids on a configurable mesh.
 - Computing a composite monitoring index with user-defined weights and half-life decay.
-- Exporting map artefacts (PNG, PDF, KML, Shapefile) from the computed grids.
-- Launching an interactive Streamlit UI to guide users through data loading, grid computation, and map visualisation.
+- Exporting map artefacts (PNG, KMZ) from the computed grids.
+- Launching an interactive web UI to guide users through data loading, grid computation, and map visualisation.
 
 ## Installation
 
@@ -34,8 +34,8 @@ The UI is divided into three sections:
 2. **Grids computation** – Compute subject, ΔGap90, SWD, and composite grids with progress indicators, stop controls, and automatic session caching.
 3. **Maps** – Explore interactive pydeck-based maps for each feature and the composite priority map. Download PNG, KML, Shapefile, or a consolidated PDF for enabled maps.
 
-### GUI example:
-<img width="600" height="600" alt="Screenshot 2025-10-31 182146" src="https://github.com/user-attachments/assets/4ad14cc1-7041-4b1e-ab58-414b401d17c5" />
+## GUI Overview:
+![seisnetinsight_data_loadding_short](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
 
 ## Programmatic usage
 For more details see the examples in the notebook folder
