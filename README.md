@@ -1,13 +1,13 @@
 # SeisNetInsight
 
-SeisNetInsight provides tooling for the seismic community to evaluate station coverage, compute monitoring priority grids, and produce interactive maps. The new Python package bundles the grid computations, session persistence, and a Streamlit web application for exploratory analysis.
+SeisNetInsight is an open-source Python package designed to help seismic network operators, researchers, and monitoring teams identify where new seismic stations would provide the greatest improvement in coverage and data quality. The tool allows users to load their own earthquake catalog, stations, and optional contextual data (such as injection activity, faults, or population). Using these inputs, SeisNetInsight creates easy-to-interpret maps that highlight locations where additional stations would have the highest impact.
 
 ## Package overview
 
 The package exposes utilities for:
 
-- Loading and validating seismic event, station, and SWD well catalogues.
-- Generating subject proximity (primary/secondary), ΔGap90, and SWD influence grids on a configurable mesh.
+- Loading seismic event, station, and SWD well (optional) catalogues.
+- Generating subject proximity (primary/secondary), ΔGap90, and SWD influence grids.
 - Computing a composite monitoring index with user-defined weights and half-life decay.
 - Exporting map artefacts (PNG, KMZ) from the computed grids.
 - Launching an interactive web UI to guide users through data loading, grid computation, and map visualisation.
@@ -32,7 +32,7 @@ The UI is divided into three sections:
 
 1. **Data loading** – Restore a previous session or configure a new one by uploading events, stations, optional SWD well catalogues, and BNA polygons. The interface shows the first 10 rows of each dataset, warns about missing expected columns, and optionally applies BallTree catalogue reduction.
 2. **Grids computation** – Compute subject, ΔGap90, SWD, and composite grids with progress indicators, stop controls, and automatic session caching.
-3. **Maps** – Explore interactive pydeck-based maps for each feature and the composite priority map. Download PNG, KML, Shapefile, or a consolidated PDF for enabled maps.
+3. **Maps** – Explore interactive pydeck-based maps for each feature and the composite priority map. Download PNG and KMZ enabled maps.
 
 ## GUI Overview:
 ![seisnetinsight_data_loadding_short](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
