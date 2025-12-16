@@ -1,6 +1,8 @@
 # SeisNetInsight
 
-SeisNetInsight is an open-source Python package designed to help seismic network operators, researchers, and monitoring teams identify where new seismic stations would provide the greatest improvement in coverage and data quality. The tool allows users to load their own earthquake catalog, stations, and optional contextual data (such as injection activity, faults, or population). Using these inputs, SeisNetInsight creates easy-to-interpret maps that highlight locations where additional stations would have the highest impact.
+SeisNetInsight is an open-source Python package designed to help seismic network operators, researchers, and monitoring teams identify where new seismic stations would provide the greatest impact in improving earthquake location accuracy and depth resolution. The tool allows users to load their own earthquake catalog, stations, and optional contextual data (such as injection activity, faults, or population). Using these inputs, SeisNetInsight creates easy-to-interpret maps that highlight locations where additional stations would have the highest impact.
+
+The method is based on well-established and widely accepted seismological principles describing how earthquake detection and location accuracy depend on the seismic network geometry, especially source-to-station distance and azimuthal coverage. These principles are incorporated as physically meaningful constraints within the automated workflow.
 
 ## Package overview
 
