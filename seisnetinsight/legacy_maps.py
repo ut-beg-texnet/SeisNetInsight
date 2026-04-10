@@ -160,6 +160,8 @@ def render_legacy_contour(
     levels: Optional[Sequence[float]] = None,
     bna_bytes: Optional[bytes] = None,
     title: Optional[str] = None,
+    colorbar_labelpad: Optional[float] = None,
+    colorbar_label: Optional[str] = None,
 ) -> plt.Figure:
     """Create a contour map figure that mirrors the legacy scripted output."""
     if value_col not in df.columns:
@@ -198,23 +200,27 @@ def render_legacy_contour(
 
     cs = ax.contourf(lons, lats, Z, levels=levels, cmap=cmap, transform=ccrs.PlateCarree(), alpha=0.9)
     cb = plt.colorbar(cs, ax=ax)
-    cb.set_label(value_col.replace("_", " "))
-
+    label_text = value_col.replace("_", " ") if colorbar_label is None else colorbar_label
+    if colorbar_labelpad is None:
+        cb.set_label(label_text)
+    else:
+        cb.set_label(label_text, labelpad=colorbar_labelpad)
+    # cb.set_label(value_col.replace("_", " "), labelpad=-20)
     if bna_bytes:
         for poly in _parse_bna_lines(bna_bytes):
             ax.plot(poly[:, 0], poly[:, 1], color="black", linewidth=1.0, transform=ccrs.PlateCarree(), label=config.bna_label)
 
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title(title or value_col, fontsize=10)
+    ax.set_title(value_col if title is None else title, fontsize=10)
 
     return fig
 
 
-def figure_png_bytes(fig: plt.Figure, *, dpi: int = 300) -> bytes:
+def figure_png_bytes(fig: plt.Figure, *, dpi: int = 300, pad_inches: float = 0.1) -> bytes:
     """Serialize a Matplotlib figure to PNG bytes."""
     buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.1)
+    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", pad_inches=pad_inches)
     plt.close(fig)
     buffer.seek(0)
     return buffer.getvalue()
@@ -230,9 +236,9 @@ def render_priority_clusters(
     bna_bytes: Optional[bytes] = None,
     title: str = "Priority areas (K-means)",
     scale_bar_length_km: float = 20.0,
-    scale_bar_location: Tuple[float, float] = (0.12, 0.08),
-    north_arrow_location: Tuple[float, float] = (0.92, 0.12),
-    north_arrow_length: float = 0.05,
+    scale_bar_location: Tuple[float, float] = (0.22, 0.06),
+    north_arrow_location: Tuple[float, float] = (0.92, 0.02),
+    north_arrow_length: float = 0.03,
 ) -> plt.Figure:
     """Render a K-means based priority classification map."""
     if priority_column not in df.columns:

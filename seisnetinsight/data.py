@@ -92,7 +92,16 @@ def load_events(
     df = _standardize_columns(df)
     missing = validate_required_columns(df, EXPECTED_EVENT_COLUMNS)
     if "origin_time" in df.columns:
-        df["origin_time"] = pd.to_datetime(df["origin_time"], errors="coerce")
+        origin_time = df["origin_time"].astype(str).str.strip()
+        if "Origin Time" in df.columns:
+            origin_clock = df["Origin Time"].astype(str).str.strip()
+            combined = pd.to_datetime(origin_time + " " + origin_clock, errors="coerce")
+            if combined.notna().any():
+                df["origin_time"] = combined
+            else:
+                df["origin_time"] = pd.to_datetime(df["origin_time"], errors="coerce")
+        else:
+            df["origin_time"] = pd.to_datetime(df["origin_time"], errors="coerce")
     if warn and missing:
         for column in missing:
             pd.Series(dtype="object")  # touch pandas to avoid lint
@@ -137,19 +146,48 @@ def balltree_reduce_events(
     distance_threshold_km: float,
     lat_col: str = "latitude",
     lon_col: str = "longitude",
+    keep: str = "first",
+    leaf_size: int = 40,
 ) -> pd.DataFrame:
     from sklearn.neighbors import BallTree
     import numpy as np
 
-    coords = df[[lat_col, lon_col]].to_numpy()
+    working = df.copy()
+    if keep == "most_recent":
+        sort_key = None
+        if "origin_time" in working.columns:
+            sort_key = pd.to_datetime(working["origin_time"], errors="coerce")
+        elif {"Origin Date", "Origin Time"}.issubset(working.columns):
+            sort_key = pd.to_datetime(
+                working["Origin Date"].astype(str).str.strip()
+                + " "
+                + working["Origin Time"].astype(str).str.strip(),
+                errors="coerce",
+            )
+        elif "Origin Date" in working.columns:
+            sort_key = pd.to_datetime(working["Origin Date"], errors="coerce")
+        if sort_key is not None:
+            working["_balltree_sort_key"] = sort_key
+            working.sort_values(
+                ["_balltree_sort_key", lat_col, lon_col],
+                ascending=[False, True, True],
+                inplace=True,
+                na_position="last",
+            )
+            working.drop(columns=["_balltree_sort_key"], inplace=True)
+        working.reset_index(drop=True, inplace=True)
+    elif keep != "first":
+        raise ValueError("keep must be either 'first' or 'most_recent'.")
+
+    coords = working[[lat_col, lon_col]].to_numpy()
     radians = np.radians(coords)
-    tree = BallTree(radians, metric="haversine")
-    mask = np.ones(len(df), dtype=bool)
+    tree = BallTree(radians, metric="haversine", leaf_size=leaf_size)
+    mask = np.ones(len(working), dtype=bool)
     radius = distance_threshold_km / 6371.0
-    for idx in range(len(df)):
+    for idx in range(len(working)):
         if not mask[idx]:
             continue
         neighbors = tree.query_radius([radians[idx]], r=radius)[0]
         mask[neighbors] = False
         mask[idx] = True
-    return df.loc[mask].reset_index(drop=True)
+    return working.loc[mask].reset_index(drop=True)

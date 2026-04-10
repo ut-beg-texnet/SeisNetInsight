@@ -187,7 +187,7 @@ def compute_gap_grid(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> pd.DataFrame:
     events = _clip_to_aoi(events, params)
-    stations = _filter_stations(_clip_to_aoi(stations, params))
+    stations = _filter_stations(stations)
     if events.empty or stations.empty:
         raise ValueError("Events and stations data must be provided to compute gap grids.")
 
@@ -229,20 +229,44 @@ def compute_gap_grid(
             _progress_wrapper(progress, (i + 1) / len(critical_events), "ΔGap90 grid")
             continue
         subset = _station_subset(stations, row["latitude"], row["longitude"], params.gap_search_km)
+        if subset.empty or len(subset) < 2:
+            _progress_wrapper(progress, (i + 1) / len(critical_events), "ΔGap90 grid")
+            continue
         base_azimuths = []
         for lat, lon in subset[["latitude", "longitude"]].itertuples(index=False):
             _, az, _ = GEOD.inv(row["longitude"], row["latitude"], lon, lat)
-            base_azimuths.append(az % 360)
-        base_azimuths = np.sort(np.asarray(base_azimuths))
-        for gi in indices:
-            grid_lat, grid_lon = grid.coordinates[gi]
-            _, az_new, _ = GEOD.inv(row["longitude"], row["latitude"], grid_lon, grid_lat)
-            az_new = az_new % 360
-            insert_pos = np.searchsorted(base_azimuths, az_new)
-            extended = np.insert(base_azimuths, insert_pos, az_new)
-            diffs = np.diff(np.append(extended, extended[0] + 360.0))
-            if diffs.max() <= threshold:
-                improvements[gi] += weights.iloc[i]
+            base_azimuths.append(az % 360.0)
+        base_azimuths = np.sort(np.asarray(base_azimuths, dtype=float))
+        extended = np.append(base_azimuths, base_azimuths[0] + 360.0)
+        diffs = np.diff(extended)
+        large_gap_idx = np.flatnonzero(diffs > threshold)
+        if large_gap_idx.size != 1:
+            _progress_wrapper(progress, (i + 1) / len(critical_events), "ΔGap90 grid")
+            continue
+
+        gap_idx = int(large_gap_idx[0])
+        gap_start = base_azimuths[gap_idx]
+        gap_end = extended[gap_idx + 1]
+        grid_subset = grid.coordinates[indices]
+        _, az_new, _ = GEOD.inv(
+            np.full(indices.size, row["longitude"]),
+            np.full(indices.size, row["latitude"]),
+            grid_subset[:, 1],
+            grid_subset[:, 0],
+        )
+        az_new = np.asarray(az_new, dtype=float) % 360.0
+        if gap_end > 360.0:
+            az_eval = np.where(az_new < gap_start, az_new + 360.0, az_new)
+        else:
+            az_eval = az_new
+        valid = (
+            (az_eval >= gap_start)
+            & (az_eval <= gap_end)
+            & ((az_eval - gap_start) <= threshold)
+            & ((gap_end - az_eval) <= threshold)
+        )
+        if np.any(valid):
+            improvements[indices[valid]] += float(weights.iloc[i])
         _progress_wrapper(progress, (i + 1) / len(critical_events), "ΔGap90 grid")
 
     return pd.DataFrame(
