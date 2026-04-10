@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -11,47 +10,83 @@ import pandas as pd
 
 EXPECTED_EVENT_COLUMNS = ["latitude", "longitude", "magnitude", "origin_time"]
 EXPECTED_STATION_COLUMNS = ["latitude", "longitude"]
+EXPECTED_CONTEXT_COLUMNS = ["latitude", "longitude", "value"]
 EXPECTED_SWD_COLUMNS = ["latitude", "longitude", "volume"]
 
 COLUMN_ALIASES: Dict[str, Sequence[str]] = {
     "latitude": ["latitude", "lat", "Latitude", "Latitude (WGS84)"],
-    "longitude": ["longitude", "lon", "Longitude", "Longitude (WGS84)"],
+    "longitude": ["longitude", "lon", "Longitude", "Longitude (WGS84)", "Longtitude"],
     "magnitude": ["magnitude", "mag", "Magnitude"],
-    "origin_time": ["origin_time", "time", "origin", "Origin Date", "event_time"],
-    "volume": ["volume", "vol", "SUM_injected_liquid_BBL", "total_volume"],
+    "origin_time": ["origin_time", "time", "Time", "origin", "Origin Date", "event_time"],
+    "value": [
+        "value",
+        "Value",
+        "val",
+        "volume",
+        "vol",
+        "SUM_injected_liquid_BBL",
+        "total_volume",
+        "PopMax",
+        "pop_max",
+        "population",
+    ],
+    "volume": ["volume", "vol", "SUM_injected_liquid_BBL", "total_volume", "value"],
 }
 
 
-@dataclass
-class LoadedData:
-    events: pd.DataFrame
-    stations: pd.DataFrame
-    swd: Optional[pd.DataFrame] = None
-
-
-class ColumnWarning(UserWarning):
-    """Raised when expected columns are missing."""
+def _read_pipe_dataframe(text: str) -> pd.DataFrame:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return pd.read_csv(io.StringIO(text))
+    normalized_lines = lines.copy()
+    if normalized_lines[0].startswith("#"):
+        normalized_lines[0] = normalized_lines[0][1:]
+    df = pd.read_csv(
+        io.StringIO("\n".join(normalized_lines)),
+        sep="|",
+        engine="python",
+        skipinitialspace=True,
+    )
+    df.columns = [str(col).strip() for col in df.columns]
+    for column in df.select_dtypes(include="object").columns:
+        df[column] = df[column].astype(str).str.strip()
+    return df
 
 
 def _read_dataframe(source) -> pd.DataFrame:
     if isinstance(source, (str, Path)):
-        return pd.read_csv(source)
-    if isinstance(source, bytes):
-        return pd.read_csv(io.BytesIO(source))
-    if hasattr(source, "read"):
+        content = Path(source).read_bytes()
+    elif isinstance(source, bytes):
+        content = source
+    elif hasattr(source, "read"):
         content = source.read()
-        if isinstance(content, bytes):
-            return pd.read_csv(io.BytesIO(content))
-        return pd.read_csv(io.StringIO(content))
+    else:
+        raise TypeError(f"Unsupported source type: {type(source)!r}")
+
+    if isinstance(content, bytes):
+        text = content.decode("utf-8-sig", errors="replace")
+    else:
+        text = str(content)
+    first_non_empty = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if "|" in first_non_empty:
+        return _read_pipe_dataframe(text)
+    if isinstance(content, bytes):
+        return pd.read_csv(io.BytesIO(content))
+    if hasattr(source, "read"):
+        return pd.read_csv(io.StringIO(text))
+    if isinstance(source, (str, Path)):
+        return pd.read_csv(io.StringIO(text))
     raise TypeError(f"Unsupported source type: {type(source)!r}")
 
 
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map: Dict[str, str] = {}
+    lowered = {str(column).strip().lower(): column for column in df.columns}
     for canonical, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
-            if alias in df.columns:
-                rename_map[alias] = canonical
+            candidate = lowered.get(str(alias).strip().lower())
+            if candidate is not None:
+                rename_map[candidate] = canonical
                 break
     return df.rename(columns=rename_map)
 
@@ -124,7 +159,7 @@ def load_stations(
     return df, missing
 
 
-def load_swd_wells(
+def load_context_points(
     source,
     *,
     column_map: Optional[Dict[str, str]] = None,
@@ -133,10 +168,28 @@ def load_swd_wells(
     df = _read_dataframe(source)
     df = _apply_column_mapping(df, column_map)
     df = _standardize_columns(df)
-    missing = validate_required_columns(df, EXPECTED_SWD_COLUMNS)
+    if "volume" in df.columns and "value" not in df.columns:
+        df = df.rename(columns={"volume": "value"})
+    missing = validate_required_columns(df, EXPECTED_CONTEXT_COLUMNS)
+    for column in ("latitude", "longitude", "value"):
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
     if warn and missing:
         for column in missing:
             pd.Series(dtype="object")
+    return df, missing
+
+
+def load_swd_wells(
+    source,
+    *,
+    column_map: Optional[Dict[str, str]] = None,
+    warn: bool = True,
+) -> Tuple[pd.DataFrame, List[str]]:
+    df, missing = load_context_points(source, column_map=column_map, warn=warn)
+    if "value" in df.columns:
+        df = df.rename(columns={"value": "volume"})
+    missing = ["volume" if column == "value" else column for column in missing]
     return df, missing
 
 

@@ -16,7 +16,6 @@ dependencies = [
     "tqdm>=4.65",
     "pyproj>=3.5",
     "streamlit>=1.31",
-    "pydeck>=0.8",
     "geopandas>=0.14",
     "matplotlib>=3.7",
     "pyarrow>=12",
@@ -26,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["streamlit-folium>=0.15"]
+test = ["pytest>=8.2"]
 
 [project.scripts]
 seisnetinsight-app = "seisnetinsight.cli:run_app"

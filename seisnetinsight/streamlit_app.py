@@ -27,19 +27,18 @@ from seisnetinsight.config import (
 from seisnetinsight.data import (
     EXPECTED_EVENT_COLUMNS,
     EXPECTED_STATION_COLUMNS,
-    EXPECTED_SWD_COLUMNS,
     COLUMN_ALIASES,
     balltree_reduce_events,
+    load_context_points,
     load_events,
     load_stations,
-    load_swd_wells,
 )
 from seisnetinsight.grids import (
     GridDefinition,
     compute_composite_index,
+    compute_context_grid,
     compute_gap_grid,
     compute_subject_grids,
-    compute_swd_grid,
     generate_grid,
     merge_grids,
 )
@@ -69,11 +68,11 @@ def _default_station_columns() -> Dict[str, str]:
     }
 
 
-def _default_swd_columns() -> Dict[str, str]:
+def _default_context_columns() -> Dict[str, str]:
     return {
         "latitude": "latitude",
         "longitude": "longitude",
-        "volume": "volume",
+        "value": "value",
     }
 
 
@@ -165,7 +164,7 @@ class WorkingSession:
     parameters: GridParameters = field(default_factory=default_parameters)
     events: Optional[pd.DataFrame] = None
     stations: Optional[pd.DataFrame] = None
-    swd: Optional[pd.DataFrame] = None
+    context: Optional[pd.DataFrame] = None
     grid: Optional[GridDefinition] = None
     grids: Dict[str, pd.DataFrame] = field(default_factory=dict)
     column_warnings: Dict[str, List[str]] = field(default_factory=dict)
@@ -175,7 +174,8 @@ class WorkingSession:
     bna_files: Dict[str, bytes] = field(default_factory=dict)
     events_columns: Dict[str, str] = field(default_factory=_default_event_columns)
     stations_columns: Dict[str, str] = field(default_factory=_default_station_columns)
-    swd_columns: Dict[str, str] = field(default_factory=_default_swd_columns)
+    context_columns: Dict[str, str] = field(default_factory=_default_context_columns)
+    context_label: str = "Context layer"
 
     @property
     def data_loaded(self) -> bool:
@@ -192,24 +192,25 @@ class WorkingSession:
             frames.append(self.grids["subject"])
         if "gap" in self.grids:
             frames.append(self.grids["gap"])
-        if "swd" in self.grids:
-            frames.append(self.grids["swd"])
+        if "context" in self.grids:
+            frames.append(self.grids["context"])
         if not frames:
             return None
         merged = merge_grids(*frames)
         if "composite" in self.grids:
+            composite_columns = [
+                "latitude",
+                "longitude",
+                "composite_index",
+                "contrib_subject_primary",
+                "contrib_subject_secondary",
+                "contrib_gap",
+                "contrib_context",
+            ]
+            if "context_value" not in merged.columns:
+                composite_columns.insert(2, "context_value")
             merged = merged.merge(
-                self.grids["composite"][
-                    [
-                        "latitude",
-                        "longitude",
-                        "composite_index",
-                        "contrib_subject_primary",
-                        "contrib_subject_secondary",
-                        "contrib_gap",
-                        "contrib_swd",
-                    ]
-                ],
+                self.grids["composite"][composite_columns],
                 on=["latitude", "longitude"],
                 how="left",
             )
@@ -236,7 +237,7 @@ LEGACY_FEATURE_ALIAS = {
     "subject4_within_4km_weighted": "subject_primary_weighted",
     "subject10_within_10km_weighted": "subject_secondary_weighted",
     "delta_gap90_weighted": "delta_gap90_weighted",
-    "swd_volume_25km_bbl": "swd_volume_25km_bbl",
+    "context_value": "context_value",
     "composite_index": "composite_index",
 }
 
@@ -247,7 +248,7 @@ LEGACY_FEATURE_ORDER = [
     ("subject4_within_4km_weighted", "S4 (recency-weighted)"),
     ("subject10_within_10km_weighted", "S10 (recency-weighted)"),
     ("delta_gap90_weighted", "ΔGap90 (recency-weighted)"),
-    ("swd_volume_25km_bbl", "SWD volume within 25 km"),
+    ("context_value", "Context layer"),
     ("composite_index", "Composite index"),
 ]
 
@@ -436,9 +437,9 @@ def _load_session_from_disk(name: str) -> WorkingSession:
         state.column_mapping.get("stations", {}),
         _default_station_columns(),
     )
-    swd_cols = _normalize_column_mapping(
-        state.column_mapping.get("swd", {}),
-        _default_swd_columns(),
+    context_cols = _normalize_column_mapping(
+        state.column_mapping.get("context", state.column_mapping.get("swd", {})),
+        _default_context_columns(),
     )
     ws = WorkingSession(
         name=name,
@@ -446,7 +447,8 @@ def _load_session_from_disk(name: str) -> WorkingSession:
         storage=state,
         events_columns=events_cols,
         stations_columns=stations_cols,
-        swd_columns=swd_cols,
+        context_columns=context_cols,
+        context_label=state.context_label,
     )
     for path in state.list_bna():
         try:
@@ -455,34 +457,49 @@ def _load_session_from_disk(name: str) -> WorkingSession:
             continue
     ws.events = state.load_source("events")
     ws.stations = state.load_source("stations")
-    ws.swd = state.load_source("swd")
+    ws.context = state.load_source("context")
     ws.grid = generate_grid(ws.parameters)
     warnings: Dict[str, List[str]] = {}
     warnings["Events"] = [] if ws.events is not None else EXPECTED_EVENT_COLUMNS
     warnings["Stations"] = [] if ws.stations is not None else EXPECTED_STATION_COLUMNS
-    warnings["SWD wells"] = [] if ws.swd is not None else []
+    warnings[ws.context_label] = [] if ws.context is not None else []
     ws.column_warnings = warnings
-    for key in ["subject", "gap", "swd", "composite"]:
+    for key in ["subject", "gap", "context", "swd", "composite"]:
         if key in state.grids:
             frame = state.load_dataframe(key)
             if key == "subject":
                 frame = frame.rename(columns=LEGACY_SUBJECT_COLUMN_MAP)
             if key == "composite":
                 frame = frame.rename(columns=LEGACY_COMPOSITE_COLUMN_MAP)
+                if "contrib_swd" in frame.columns and "contrib_context" not in frame.columns:
+                    frame["contrib_context"] = frame["contrib_swd"]
+                if "swd_volume_25km_bbl" in frame.columns and "context_value" not in frame.columns:
+                    frame["context_value"] = frame["swd_volume_25km_bbl"]
+            if key in {"context", "swd"}:
+                if "swd_volume_25km_bbl" in frame.columns:
+                    frame = frame.rename(columns={"swd_volume_25km_bbl": "context_value"})
+                ws.grids["context"] = frame
+                continue
             ws.grids[key] = frame
     return ws
 
 
-def _save_sources(session: WorkingSession, events: pd.DataFrame, stations: pd.DataFrame, swd: Optional[pd.DataFrame]) -> None:
+def _save_sources(
+    session: WorkingSession,
+    events: pd.DataFrame,
+    stations: pd.DataFrame,
+    context: Optional[pd.DataFrame],
+) -> None:
     if session.storage is None:
         session.storage = SessionState(session.name, session.parameters, SessionFiles(), column_mapping={})
     session.storage.column_mapping["events"] = dict(session.events_columns)
     session.storage.column_mapping["stations"] = dict(session.stations_columns)
-    session.storage.column_mapping["swd"] = dict(session.swd_columns)
+    session.storage.column_mapping["context"] = dict(session.context_columns)
+    session.storage.context_label = session.context_label
     session.storage.save_source(events, "events")
     session.storage.save_source(stations, "stations")
-    if swd is not None:
-        session.storage.save_source(swd, "swd")
+    if context is not None:
+        session.storage.save_source(context, "context")
     session.storage.save_metadata()
 
 
@@ -491,6 +508,66 @@ def _save_bna_files(session: WorkingSession) -> None:
         return
     for name, data in session.bna_files.items():
         session.storage.save_bna(name, data)
+
+
+def build_working_session(
+    *,
+    session_name: str,
+    parameters: GridParameters,
+    events_bytes: bytes,
+    stations_bytes: bytes,
+    context_bytes: Optional[bytes] = None,
+    bna_data: Optional[Dict[str, bytes]] = None,
+    events_columns: Optional[Dict[str, str]] = None,
+    stations_columns: Optional[Dict[str, str]] = None,
+    context_columns: Optional[Dict[str, str]] = None,
+    context_label: str = "Context layer",
+    balltree_enabled: bool = False,
+    balltree_distance: float = 1.0,
+) -> WorkingSession:
+    if events_bytes is None or stations_bytes is None:
+        raise ValueError("Events and stations files are required.")
+
+    resolved_events_columns = events_columns or _default_event_columns()
+    resolved_stations_columns = stations_columns or _default_station_columns()
+    resolved_context_columns = context_columns or _default_context_columns()
+
+    events_df, events_missing = load_events(io.BytesIO(events_bytes), column_map=resolved_events_columns)
+    stations_df, stations_missing = load_stations(io.BytesIO(stations_bytes), column_map=resolved_stations_columns)
+    context_df = None
+    context_missing: List[str] = []
+    if context_bytes is not None:
+        context_df, context_missing = load_context_points(
+            io.BytesIO(context_bytes),
+            column_map=resolved_context_columns,
+        )
+
+    warnings = {
+        "Events": events_missing,
+        "Stations": stations_missing,
+        context_label: context_missing,
+    }
+    if balltree_enabled:
+        events_df = balltree_reduce_events(events_df, distance_threshold_km=balltree_distance)
+
+    session = WorkingSession(
+        name=session_name,
+        parameters=parameters,
+        events=events_df,
+        stations=stations_df,
+        context=context_df,
+        balltree_enabled=balltree_enabled,
+        balltree_distance=balltree_distance,
+        column_warnings=warnings,
+        events_columns=dict(resolved_events_columns),
+        stations_columns=dict(resolved_stations_columns),
+        context_columns=dict(resolved_context_columns),
+        context_label=context_label,
+    )
+    session.grid = generate_grid(parameters)
+    if bna_data:
+        session.bna_files.update(bna_data)
+    return session
 
 
 def _run_subject_grid(session: WorkingSession) -> None:
@@ -555,40 +632,42 @@ def _run_gap_grid(session: WorkingSession) -> None:
         st.session_state[_run_key("gap")] = False
 
 
-def _run_swd_grid(session: WorkingSession) -> None:
+def _run_context_grid(session: WorkingSession) -> None:
     status = st.empty()
-    progress = st.progress(0.0, text="Starting SWD grid…")
+    progress = st.progress(0.0, text="Starting context grid…")
 
     def update(fraction: float, message: str) -> None:
         progress.progress(min(fraction, 1.0), text=message)
 
     try:
         grid = session.ensure_grid()
-        result = compute_swd_grid(
-            session.swd,
+        result = compute_context_grid(
+            session.context,
             grid,
             session.parameters,
+            aggregation=session.parameters.context_aggregation,
+            radius_km=session.parameters.context_radius_km,
             progress=update,
-            should_stop=lambda: _stop_requested("swd"),
+            should_stop=lambda: _stop_requested("context"),
         )
-        session.grids["swd"] = result
+        session.grids["context"] = result
         if session.storage:
-            session.storage.save_dataframe(result, "swd")
-        status.success("SWD grid computed.")
+            session.storage.save_dataframe(result, "context")
+        status.success(f"{session.context_label} grid computed.")
     except InterruptedError:
-        status.warning("SWD computation stopped by user.")
+        status.warning(f"{session.context_label} computation stopped by user.")
     except Exception as exc:
-        status.error(f"Failed to compute SWD grid: {exc}")
+        status.error(f"Failed to compute {session.context_label} grid: {exc}")
     finally:
         progress.empty()
-        _reset_stop("swd")
-        st.session_state[_run_key("swd")] = False
+        _reset_stop("context")
+        st.session_state[_run_key("context")] = False
 
 
 def _run_composite_grid(session: WorkingSession) -> None:
     merged = session.merged()
     if merged is None:
-        st.warning("Compute subject, gap, and SWD grids before the composite index.")
+        st.warning("Compute subject and ΔGap90 grids before the composite index.")
         return
     try:
         composite = compute_composite_index(merged, session.parameters)
@@ -698,16 +777,30 @@ def _render_data_loading(session: WorkingSession) -> None:
             value=float(session.parameters.weight_gap),
         )
 
-    swd_cols = st.columns(2)
-    with swd_cols[0]:
-        swd_radius = st.number_input(
-            "SWD radius (km)",
-            value=float(session.parameters.swd_radius_km),
+    context_cols = st.columns(4)
+    with context_cols[0]:
+        context_label = st.text_input("Context layer name", value=session.context_label)
+    with context_cols[1]:
+        context_radius = st.number_input(
+            "Context radius (km)",
+            value=float(session.parameters.context_radius_km),
         )
-    with swd_cols[1]:
-        weight_swd = st.number_input(
-            "Weight SWD",
-            value=float(session.parameters.weight_swd),
+    with context_cols[2]:
+        aggregation_options = ["sum", "average", "count", "min", "max"]
+        aggregation_index = aggregation_options.index(
+            session.parameters.context_aggregation
+            if session.parameters.context_aggregation in aggregation_options
+            else "sum"
+        )
+        context_aggregation = st.selectbox(
+            "Context aggregation",
+            aggregation_options,
+            index=aggregation_index,
+        )
+    with context_cols[3]:
+        weight_context = st.number_input(
+            "Weight context",
+            value=float(session.parameters.weight_context),
         )
 
     final_cols = st.columns(2)
@@ -732,12 +825,12 @@ def _render_data_loading(session: WorkingSession) -> None:
 
     events_file = st.file_uploader("Events file", type=["csv"])
     stations_file = st.file_uploader("Stations file", type=["csv"])
-    swd_file = st.file_uploader("SWD wells file (optional)", type=["csv"], key="swd")
+    context_file = st.file_uploader("Context file (optional)", type=["csv"], key="context")
     bna_files = st.file_uploader("BNA files (optional)", type=["bna"], accept_multiple_files=True)
 
     events_bytes = events_file.getvalue() if events_file is not None else None
     stations_bytes = stations_file.getvalue() if stations_file is not None else None
-    swd_bytes = swd_file.getvalue() if swd_file is not None else None
+    context_bytes = context_file.getvalue() if context_file is not None else None
 
     if events_bytes is not None:
         event_columns = _extract_columns(io.BytesIO(events_bytes))
@@ -775,22 +868,22 @@ def _render_data_loading(session: WorkingSession) -> None:
                 "stations_column",
             )
 
-    if swd_bytes is not None:
-        swd_columns = _extract_columns(io.BytesIO(swd_bytes))
-        if not swd_columns:
-            st.warning("Could not read column names from SWD file.")
+    if context_bytes is not None:
+        context_columns = _extract_columns(io.BytesIO(context_bytes))
+        if not context_columns:
+            st.warning("Could not read column names from context file.")
         else:
-            st.caption("SWD column mapping")
-            session.swd_columns = _render_column_selectors(
+            st.caption("Context column mapping")
+            session.context_columns = _render_column_selectors(
                 [
                     ("latitude", "Latitude"),
                     ("longitude", "Longitude"),
-                    ("volume", "Volume"),
+                    ("value", "Value"),
                 ],
-                swd_columns,
-                session.swd_columns,
-                _default_swd_columns(),
-                "swd_column",
+                context_columns,
+                session.context_columns,
+                _default_context_columns(),
+                "context_column",
             )
 
     inputs = {
@@ -806,12 +899,14 @@ def _render_data_loading(session: WorkingSession) -> None:
         "GAP_SEARCH_KM": gap_search,
         "GAP_TARGET_ANGLE": gap_target_angle,
         "WEIGHT_GAP": weight_gap,
-        "SWD_RADIUS_KM": swd_radius,
-        "WEIGHT_SWD": weight_swd,
+        "CONTEXT_RADIUS_KM": context_radius,
+        "CONTEXT_AGGREGATION": context_aggregation,
+        "WEIGHT_CONTEXT": weight_context,
         "HALF_TIME_YEARS": half_time,
         "OVERWRITE": overwrite,
     }
     parameters = parameter_from_inputs(inputs, logger=st.warning)
+    session.context_label = context_label.strip() or "Context layer"
 
     previous_params = session.parameters
 
@@ -837,8 +932,8 @@ def _render_data_loading(session: WorkingSession) -> None:
         "gap_search_km",
         "gap_target_angle_deg",
         "weight_gap",
-        "swd_radius_km",
-        "weight_swd",
+        "context_radius_km",
+        "weight_context",
         "half_time_years",
     ]
     int_fields = [
@@ -864,6 +959,9 @@ def _render_data_loading(session: WorkingSession) -> None:
                 params_changed = True
                 break
     if not params_changed:
+        if getattr(previous_params, "context_aggregation", None) != getattr(parameters, "context_aggregation", None):
+            params_changed = True
+    if not params_changed:
         if getattr(previous_params, "overwrite", None) != getattr(parameters, "overwrite", None):
             params_changed = True
 
@@ -877,57 +975,45 @@ def _render_data_loading(session: WorkingSession) -> None:
         session.grids.pop("composite", None)
 
     def process_inputs(run_all: bool) -> None:
-        if events_bytes is None or stations_bytes is None:
-            st.error("Events and stations files are required.")
+        try:
+            bna_data = None
+            if bna_files:
+                bna_data = {file.name: file.getvalue() for file in bna_files}
+            new_session = build_working_session(
+                session_name=session_name,
+                parameters=parameters,
+                events_bytes=events_bytes,
+                stations_bytes=stations_bytes,
+                context_bytes=context_bytes,
+                bna_data=bna_data,
+                events_columns=session.events_columns,
+                stations_columns=session.stations_columns,
+                context_columns=session.context_columns,
+                context_label=session.context_label,
+                balltree_enabled=balltree_enabled,
+                balltree_distance=balltree_distance,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
             return
-        events_df, events_missing = load_events(io.BytesIO(events_bytes), column_map=session.events_columns)
-        stations_df, stations_missing = load_stations(io.BytesIO(stations_bytes), column_map=session.stations_columns)
-        swd_df = None
-        swd_missing: List[str] = []
-        if swd_bytes is not None:
-            swd_df, swd_missing = load_swd_wells(io.BytesIO(swd_bytes), column_map=session.swd_columns)
-        warnings = {
-            "Events": events_missing,
-            "Stations": stations_missing,
-            "SWD wells": swd_missing,
-        }
-        if balltree_enabled:
-            events_df = balltree_reduce_events(events_df, distance_threshold_km=balltree_distance)
-        new_session = WorkingSession(
-            name=session_name,
-            parameters=parameters,
-            events=events_df,
-            stations=stations_df,
-            swd=swd_df,
-            balltree_enabled=balltree_enabled,
-            balltree_distance=balltree_distance,
-            column_warnings=warnings,
-            events_columns=session.events_columns.copy(),
-            stations_columns=session.stations_columns.copy(),
-            swd_columns=session.swd_columns.copy(),
-        )
-        new_session.grid = generate_grid(parameters)
-        if bna_files:
-            for file in bna_files:
-                new_session.bna_files[file.name] = file.getvalue()
         set_working_session(new_session)
-        _show_column_warnings(warnings)
+        _show_column_warnings(new_session.column_warnings)
         st.markdown("**Events preview**")
-        st.dataframe(events_df.head(10), width="stretch")
+        st.dataframe(new_session.events.head(10), width="stretch")
         st.markdown("**Stations preview**")
-        st.dataframe(stations_df.head(10), width="stretch")
-        if swd_df is not None:
-            st.markdown("**SWD wells preview**")
-            st.dataframe(swd_df.head(10), width="stretch")
-        _save_sources(new_session, events_df, stations_df, swd_df)
+        st.dataframe(new_session.stations.head(10), width="stretch")
+        if new_session.context is not None:
+            st.markdown(f"**{new_session.context_label} preview**")
+            st.dataframe(new_session.context.head(10), width="stretch")
+        _save_sources(new_session, new_session.events, new_session.stations, new_session.context)
         _save_bna_files(new_session)
         if run_all:
             st.session_state[_run_key("subject")] = True
             st.session_state[_run_key("gap")] = True
-            st.session_state[_run_key("swd")] = True
+            st.session_state[_run_key("context")] = True
             _run_subject_grid(new_session)
             _run_gap_grid(new_session)
-            _run_swd_grid(new_session)
+            _run_context_grid(new_session)
             _run_composite_grid(new_session)
 
     col1, col2 = st.columns(2)
@@ -958,7 +1044,7 @@ def _render_grid_section(session: WorkingSession) -> None:
 
     run_with_stop("subject", "subject grids", _run_subject_grid)
     run_with_stop("gap", "ΔGap90 grid", _run_gap_grid)
-    run_with_stop("swd", "SWD grid", _run_swd_grid)
+    run_with_stop("context", f"{session.context_label} grid", _run_context_grid)
 
     if st.button("Re-compute composite index"):
         _run_composite_grid(session)
@@ -989,6 +1075,11 @@ def _render_maps_section(session: WorkingSession) -> None:
     for feature, label in LEGACY_FEATURE_ORDER:
         if feature not in legacy_df.columns:
             continue
+        if feature == "context_value":
+            label = (
+                f"{session.context_label} "
+                f"({session.parameters.context_aggregation} within {session.parameters.context_radius_km:g} km)"
+            )
         if st.checkbox(f"Show {label}", value=True, key=f"legacy_feature_{feature}"):
             fig = render_legacy_contour(
                 legacy_df,
@@ -1049,7 +1140,7 @@ def _render_maps_section(session: WorkingSession) -> None:
         "subject_primary_weighted": normalized_weights.get("subject_primary", 0.0),
         "subject_secondary_weighted": normalized_weights.get("subject_secondary", 0.0),
         "delta_gap90_weighted": normalized_weights.get("gap", 0.0),
-        "swd_volume_25km_bbl": normalized_weights.get("swd", 0.0),
+        "context_value": normalized_weights.get("context", 0.0),
     }
     apply_feature_weight_scaling = st.checkbox(
         "Emphasize priority weights during clustering",

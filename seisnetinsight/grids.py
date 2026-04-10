@@ -15,6 +15,7 @@ from .config import GridParameters
 
 EARTH_RADIUS_KM = 6371.0
 GEOD = Geod(ellps="WGS84")
+SUPPORTED_CONTEXT_AGGREGATIONS = {"sum", "average", "count", "min", "max"}
 
 
 @dataclass
@@ -82,6 +83,16 @@ def _flat_distance_km(point_lat: float, point_lon: float, coords: np.ndarray) ->
 def _progress_wrapper(progress: Optional[Callable[[float, str], None]], fraction: float, message: str) -> None:
     if progress:
         progress(fraction, message)
+
+
+def _normalize_context_aggregation(aggregation: str) -> str:
+    normalized = str(aggregation).strip().lower()
+    if normalized not in SUPPORTED_CONTEXT_AGGREGATIONS:
+        raise ValueError(
+            "Unsupported context aggregation. Expected one of: "
+            + ", ".join(sorted(SUPPORTED_CONTEXT_AGGREGATIONS))
+        )
+    return normalized
 
 
 def compute_subject_grids(
@@ -278,6 +289,91 @@ def compute_gap_grid(
     )
 
 
+def compute_context_grid(
+    context: pd.DataFrame,
+    grid: GridDefinition,
+    params: GridParameters,
+    *,
+    aggregation: Optional[str] = None,
+    radius_km: Optional[float] = None,
+    value_column: str = "value",
+    output_column: str = "context_value",
+    progress: Optional[Callable[[float, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> pd.DataFrame:
+    if context is None or context.empty:
+        return pd.DataFrame(
+            {
+                "latitude": grid.coordinates[:, 0],
+                "longitude": grid.coordinates[:, 1],
+                output_column: np.zeros(grid.size, dtype=float),
+            }
+        )
+
+    aggregation_name = _normalize_context_aggregation(
+        aggregation or getattr(params, "context_aggregation", "sum")
+    )
+    search_radius_km = float(
+        params.context_radius_km if radius_km is None else radius_km
+    )
+    working = context.copy()
+    if value_column not in working.columns:
+        raise KeyError(f"Column '{value_column}' not available in context data.")
+    working = working.loc[working[["latitude", "longitude"]].notna().all(axis=1)].copy()
+    if aggregation_name == "count":
+        value_series = pd.Series(np.ones(len(working), dtype=float), index=working.index)
+    else:
+        value_series = pd.to_numeric(working[value_column], errors="coerce")
+        working = working.loc[value_series.notna()].copy()
+        value_series = value_series.loc[working.index]
+
+    if working.empty:
+        return pd.DataFrame(
+            {
+                "latitude": grid.coordinates[:, 0],
+                "longitude": grid.coordinates[:, 1],
+                output_column: np.zeros(grid.size, dtype=float),
+            }
+        )
+
+    point_coords = working[["latitude", "longitude"]].to_numpy()
+    tree = BallTree(np.radians(point_coords), metric="haversine")
+    radius = search_radius_km / EARTH_RADIUS_KM
+    totals = np.zeros(grid.size, dtype=float)
+
+    chunk = 2000
+    for start in range(0, grid.size, chunk):
+        if should_stop and should_stop():
+            raise InterruptedError("Context grid computation interrupted by user.")
+        end = min(start + chunk, grid.size)
+        grid_chunk = np.radians(grid.coordinates[start:end])
+        neighborhoods = tree.query_radius(grid_chunk, r=radius)
+        for offset, neighbors in enumerate(neighborhoods):
+            if not neighbors.size:
+                continue
+            if aggregation_name == "count":
+                totals[start + offset] = float(neighbors.size)
+                continue
+            values = value_series.iloc[neighbors].to_numpy(dtype=float)
+            if aggregation_name == "sum":
+                totals[start + offset] = float(values.sum())
+            elif aggregation_name == "average":
+                totals[start + offset] = float(values.mean())
+            elif aggregation_name == "min":
+                totals[start + offset] = float(values.min())
+            elif aggregation_name == "max":
+                totals[start + offset] = float(values.max())
+        _progress_wrapper(progress, end / grid.size, "Context grid")
+
+    return pd.DataFrame(
+        {
+            "latitude": grid.coordinates[:, 0],
+            "longitude": grid.coordinates[:, 1],
+            output_column: totals,
+        }
+    )
+
+
 def compute_swd_grid(
     swd: pd.DataFrame,
     grid: GridDefinition,
@@ -286,39 +382,22 @@ def compute_swd_grid(
     progress: Optional[Callable[[float, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> pd.DataFrame:
-    if swd is None or swd.empty:
-        return pd.DataFrame(
-            {
-                "latitude": grid.coordinates[:, 0],
-                "longitude": grid.coordinates[:, 1],
-                "swd_volume_25km_bbl": np.zeros(grid.size, dtype=float),
-            }
-        )
-
-    well_coords = swd[["latitude", "longitude"]].to_numpy()
-    tree = BallTree(np.radians(well_coords), metric="haversine")
-    radius = params.swd_radius_km / EARTH_RADIUS_KM
-    totals = np.zeros(grid.size, dtype=float)
-
-    chunk = 2000
-    for start in range(0, grid.size, chunk):
-        if should_stop and should_stop():
-            raise InterruptedError("SWD grid computation interrupted by user.")
-        end = min(start + chunk, grid.size)
-        grid_chunk = np.radians(grid.coordinates[start:end])
-        neighborhoods = tree.query_radius(grid_chunk, r=radius)
-        for offset, neighbors in enumerate(neighborhoods):
-            if neighbors.size:
-                totals[start + offset] = swd.iloc[neighbors]["volume"].sum()
-        _progress_wrapper(progress, end / grid.size, "SWD grid")
-
-    return pd.DataFrame(
-        {
-            "latitude": grid.coordinates[:, 0],
-            "longitude": grid.coordinates[:, 1],
-            "swd_volume_25km_bbl": totals,
-        }
+    if swd is None:
+        context = None
+    else:
+        context = swd.rename(columns={"volume": "value"})
+    result = compute_context_grid(
+        context,
+        grid,
+        params,
+        aggregation="sum",
+        radius_km=params.swd_radius_km,
+        value_column="value",
+        output_column="context_value",
+        progress=progress,
+        should_stop=should_stop,
     )
+    return result.rename(columns={"context_value": "swd_volume_25km_bbl"})
 
 
 def merge_grids(*frames: pd.DataFrame) -> pd.DataFrame:
@@ -342,8 +421,11 @@ def compute_composite_index(df: pd.DataFrame, params: GridParameters) -> pd.Data
         "subject_primary_weighted",
         "subject_secondary_weighted",
         "delta_gap90_weighted",
-        "swd_volume_25km_bbl",
+        "context_value",
     ]
+    if "context_value" not in df.columns and "swd_volume_25km_bbl" in df.columns:
+        df = df.copy()
+        df["context_value"] = df["swd_volume_25km_bbl"]
     for column in required_columns:
         if column not in df.columns:
             df[column] = 0.0
@@ -360,7 +442,7 @@ def compute_composite_index(df: pd.DataFrame, params: GridParameters) -> pd.Data
         "subject_primary": minmax(df["subject_primary_weighted"]),
         "subject_secondary": minmax(df["subject_secondary_weighted"]),
         "gap": minmax(df["delta_gap90_weighted"]),
-        "swd": minmax(df["swd_volume_25km_bbl"]),
+        "context": minmax(df["context_value"]),
     }
 
     composite = sum(weights[key] * scaled[key] for key in scaled)
@@ -369,5 +451,7 @@ def compute_composite_index(df: pd.DataFrame, params: GridParameters) -> pd.Data
     df["contrib_subject_primary"] = weights["subject_primary"] * scaled["subject_primary"]
     df["contrib_subject_secondary"] = weights["subject_secondary"] * scaled["subject_secondary"]
     df["contrib_gap"] = weights["gap"] * scaled["gap"]
-    df["contrib_swd"] = weights["swd"] * scaled["swd"]
+    df["contrib_context"] = weights["context"] * scaled["context"]
+    # Preserve the legacy SWD contribution column for older outputs.
+    df["contrib_swd"] = df["contrib_context"]
     return df
