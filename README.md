@@ -25,7 +25,7 @@ seisnetinsight-app
 
 ## UI Overview
 
-![SeisNetInsight UI overview](figures/ui_overview.svg)
+<img src="./figures/ui_overview.png" alt="SeisNetInsight UI overview" width="100%" />
 
 ![SeisNetInsight animated UI overview](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
 
@@ -43,11 +43,11 @@ The app is organized into three sections:
 
 The core method remains grounded in source-to-station distance and azimuthal coverage:
 
-![Azimuthal gap and distance illustration](figures/az_gap_and_dist_sta_illustration.png)
+<img src="./figures/az_gap_and_dist_sta_illustration.png" alt="Azimuthal gap and distance illustration" width="100%" />
 
 The end-to-end workflow is summarized here:
 
-![Workflow figure](figures/Flowchart%20for%20Poster%20SSA.png)
+<img src="./figures/workflow_flowchart_ssa.png" alt="Workflow figure" width="100%" />
 
 ## Input Data
 

@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from cmcrameri import cm as cmc
+from cartopy import config as cartopy_config
+from cartopy.io import Downloader
+import cartopy.feature as cfeature
 from PIL import Image
 import matplotlib as mpl
 
@@ -218,6 +221,118 @@ class WorkingSession:
 
 
 SESSION_KEY = "seisnetinsight_session"
+
+
+def _required_cartopy_specs(params: GridParameters) -> List[Dict[str, str]]:
+    extent = [params.lons[0], params.lons[1], params.lats[0], params.lats[1]]
+    specs: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    feature_specs = [
+        cfeature.LAND,
+        cfeature.OCEAN,
+        cfeature.LAKES,
+        cfeature.RIVERS,
+        cfeature.BORDERS,
+        cfeature.STATES,
+    ]
+    for feature in feature_specs:
+        resolution = feature.scaler.scale_from_extent(extent) if getattr(feature, "scaler", None) else feature.scale
+        spec = (str(resolution), str(feature.category), str(feature.name))
+        if spec in seen:
+            continue
+        seen.add(spec)
+        specs.append(
+            {
+                "resolution": spec[0],
+                "category": spec[1],
+                "name": spec[2],
+                "label": f"{spec[2]} ({spec[0]})",
+            }
+        )
+
+    roads_spec = ("10m", "cultural", "roads")
+    if roads_spec not in seen:
+        specs.append(
+            {
+                "resolution": roads_spec[0],
+                "category": roads_spec[1],
+                "name": roads_spec[2],
+                "label": "roads (10m)",
+            }
+        )
+    return specs
+
+
+def _cartopy_target_exists(spec: Dict[str, str]) -> bool:
+    downloader = Downloader.from_config(
+        ("shapefiles", "natural_earth", spec["resolution"], spec["category"], spec["name"])
+    )
+    format_dict = {
+        "config": cartopy_config,
+        "resolution": spec["resolution"],
+        "category": spec["category"],
+        "name": spec["name"],
+    }
+    pre_downloaded_path = downloader.pre_downloaded_path(format_dict)
+    if pre_downloaded_path is not None and pre_downloaded_path.exists():
+        return True
+    return downloader.target_path(format_dict).exists()
+
+
+def _missing_cartopy_specs(params: GridParameters) -> List[Dict[str, str]]:
+    return [spec for spec in _required_cartopy_specs(params) if not _cartopy_target_exists(spec)]
+
+
+def _download_cartopy_specs(specs: List[Dict[str, str]]) -> None:
+    progress = st.progress(0.0, text="Preparing Cartopy map data…")
+    try:
+        total = max(len(specs), 1)
+        for idx, spec in enumerate(specs, start=1):
+            progress.progress(
+                (idx - 1) / total,
+                text=f"Downloading {spec['label']} ({idx}/{total})…",
+            )
+            downloader = Downloader.from_config(
+                ("shapefiles", "natural_earth", spec["resolution"], spec["category"], spec["name"])
+            )
+            format_dict = {
+                "config": cartopy_config,
+                "resolution": spec["resolution"],
+                "category": spec["category"],
+                "name": spec["name"],
+            }
+            downloader.path(format_dict)
+        progress.progress(1.0, text="Cartopy map data ready.")
+    finally:
+        progress.empty()
+
+
+def _ensure_cartopy_map_data(params: GridParameters) -> bool:
+    missing_specs = _missing_cartopy_specs(params)
+    if not missing_specs:
+        return True
+
+    st.info(
+        "Map previews use Cartopy's Natural Earth basemap files for land, borders, water bodies, "
+        "state boundaries, and roads. On first use, these files must be downloaded and cached locally. "
+        "This can take longer than the grid computations, but it only needs to happen once."
+    )
+    missing_labels = ", ".join(spec["label"] for spec in missing_specs)
+    st.caption(f"Missing map datasets: {missing_labels}")
+
+    if st.button("Download map data and continue", key="download_cartopy_map_data"):
+        try:
+            with st.spinner("Downloading Cartopy map data…"):
+                _download_cartopy_specs(missing_specs)
+        except Exception as exc:
+            st.error(f"Failed to download Cartopy map data: {exc}")
+            return False
+        st.success("Cartopy map data downloaded. Rendering maps…")
+        st.rerun()
+
+    st.warning("Maps will appear after the required Cartopy files are downloaded.")
+    return False
 STOP_PREFIX = "stop_"
 RUN_PREFIX = "run_"
 
@@ -1061,6 +1176,8 @@ def _render_maps_section(session: WorkingSession) -> None:
     merged = session.merged()
     if merged is None:
         st.info("Compute grids to enable map previews.")
+        return
+    if not _ensure_cartopy_map_data(session.parameters):
         return
 
     legacy_df = merged.rename(
