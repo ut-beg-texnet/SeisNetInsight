@@ -2,13 +2,6 @@
 
 SeisNetInsight is an open-source Python package and Streamlit app for identifying where additional seismic stations would provide the greatest monitoring benefit. It combines seismic-event proximity, azimuthal-gap improvement, and an optional generic contextual point layer into gridded priority maps that can be reviewed in the app or exported as figures and KMZ overlays.
 
-The launch surface in this repository is:
-
-- the installed `seisnetinsight-app` Streamlit interface
-- the public Python APIs in `seisnetinsight`
-- saved-session restore and re-run workflows
-- map export and clustering outputs
-
 ## What The App Does
 
 - Loads earthquake catalogs and station catalogs from CSV.
@@ -17,21 +10,11 @@ The launch surface in this repository is:
 - Supports optional BNA overlays and optional BallTree event reduction.
 - Computes subject-primary, subject-secondary, Delta Gap90, context, and composite-priority grids.
 - Renders contour maps and a K-means priority map, then exports PNG and KMZ outputs.
-- Preserves backward compatibility with the legacy SWD-specific APIs:
-  `load_swd_wells(...)` and `compute_swd_grid(...)`.
 
 ## Installation
 
-Install the package and app entrypoint:
-
 ```bash
 python -m pip install .
-```
-
-Install test tooling:
-
-```bash
-python -m pip install ".[test]"
 ```
 
 ## Run The App
@@ -40,11 +23,11 @@ python -m pip install ".[test]"
 seisnetinsight-app
 ```
 
-The launcher now sets a writable `MPLCONFIGDIR` automatically before Streamlit imports Matplotlib, which avoids the common first-run cache warning in locked-down environments.
-
 ## UI Overview
 
 ![SeisNetInsight UI overview](figures/ui_overview.svg)
+
+![SeisNetInsight animated UI overview](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
 
 The app is organized into three sections:
 
@@ -72,7 +55,6 @@ The end-to-end workflow is summarized here:
 
 - `latitude`
 - `longitude`
-- `magnitude`
 - `origin_time`
 
 ### Required station columns
@@ -86,7 +68,7 @@ The end-to-end workflow is summarized here:
 - `longitude`
 - `value`
 
-Column names can be mapped in the UI, and the loaders also recognize common aliases. The package now accepts official FDSN text responses directly in addition to CSV, which makes external-network validation easier.
+Column names can be mapped in the UI, and the loaders also recognize common aliases. The main workflows rely on event location and origin time; magnitude can be included in the catalog if available, but it is not part of the core map interpretation shown here.
 
 ## Programmatic Usage
 
@@ -175,16 +157,6 @@ composite = compute_composite_index(merged, params)
 print(composite[["latitude", "longitude", "context_value", "composite_index"]].head())
 ```
 
-### Legacy SWD compatibility
-
-Existing notebooks or scripts that still use the SWD-specific names continue to work:
-
-```python
-from seisnetinsight import compute_swd_grid, load_swd_wells
-```
-
-Internally these compatibility wrappers now call the generic context pipeline.
-
 ## External Seismic-Network Validation
 
 Bounded upstream samples for manual launch checks are versioned in [tests/fixtures/external](tests/fixtures/external). They come from official services:
@@ -227,45 +199,8 @@ events, _ = load_events("scedc_events.txt", warn=False)
 stations, _ = load_stations("scedc_stations.txt", warn=False)
 ```
 
-## Tests And Launch Checks
-
-Run the automated tests:
-
-```bash
-python -m pytest -q
-```
-
-Benchmark the bundled sample workflow against the current launch budgets:
-
-```bash
-python scripts/benchmark_sample_workflow.py
-```
-
-That script fails if:
-
-- the full sample workflow exceeds `45 s`
-- any one of `compute_subject_grids`, `compute_gap_grid`, or `compute_context_grid` exceeds `20 s`
-
-Run a fresh-install smoke test in an isolated virtual environment:
-
-```bash
-python scripts/smoke_local_install.py
-```
-
-The smoke script installs the package into a temporary environment, launches `seisnetinsight-app`, waits for the Streamlit health endpoint, and fails if the old Matplotlib cache warnings appear.
-
 ## Repository Notes
 
 - [sample_files](sample_files) contains the bundled example datasets.
 - [figures](figures) contains the tracked documentation figures used in this README.
-- [tests](tests) contains automated loader, grid, session, Streamlit, and external-validation tests.
-- [scripts](scripts) contains manual launch-prep utilities for fixture refresh, validation, benchmarking, and smoke testing.
-
-## Current Validation Coverage
-
-The launch-readiness work in this branch includes:
-
-- automated tests for loaders, aliasing, malformed timestamps, missing columns, duplicate rows, session persistence, backward compatibility, aggregation modes, interruption, and Streamlit shell/workflow behavior
-- fixture-based validation for external seismic networks
-- a generic context layer in the API and UI
-- removal of the unused pydeck export path and other dead code from the older app flow
+- [scripts](scripts) contains helper utilities for fixture refresh, validation, benchmarking, report generation, and smoke testing.
