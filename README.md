@@ -1,6 +1,6 @@
 # SeisNetInsight
 
-SeisNetInsight is an open-source Python package and Streamlit app for identifying where additional seismic stations would provide the greatest monitoring benefit. It combines seismic-event proximity, azimuthal-gap improvement, and an optional generic contextual point layer into gridded priority maps that can be reviewed in the app or exported as figures and KMZ overlays.
+SeisNetInsight is an open-source Python tool for identifying where additional seismic stations could provide the greatest monitoring benefit. It combines source-station proximity, azimuthal-gap coverage, and an optional generic contextual  layer into insightful contour maps and a priority map that can be reviewed in the app or exported as figures and KMZ overlays.
 
 ## What The App Does
 
@@ -8,12 +8,18 @@ SeisNetInsight is an open-source Python package and Streamlit app for identifyin
 - Accepts an optional contextual point layer with `latitude`, `longitude`, and `value`.
 - Supports context aggregation with `sum`, `average`, `count`, `min`, or `max`.
 - Supports optional BNA overlays and optional BallTree event reduction.
-- Computes subject-primary, subject-secondary, Delta Gap90, context, and composite-priority grids.
+- Computes primary and secondary source-station distance, ΔGap, context, and composite-priority grids.
 - Renders contour maps and a K-means priority map, then exports PNG and KMZ outputs.
 
 ## Installation
 
+SeisNetInsight requires Python `3.9` or newer.
+
+It is recommended to install it in a separate Python environment, for example with `venv` or `conda`.
+
 ```bash
+git clone https://github.com/ut-beg-texnet/SeisNetInsight
+cd SeisNetInsight
 python -m pip install .
 ```
 
@@ -29,13 +35,17 @@ seisnetinsight-app
 
 ![SeisNetInsight animated UI overview](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
 
+### Export the Maps to Google Earth
+
+<img width="1898" height="965" alt="earth_web" src="https://github.com/user-attachments/assets/59b3c58f-eb04-486a-8253-76148a22bbcb" />
+
 The app is organized into three sections:
 
 1. `Data Loading`
    Upload events, stations, optional context CSV, and optional BNA files.
    Map incoming columns before loading, set context aggregation and radius, and optionally apply BallTree event reduction.
 2. `Grids Computation`
-   Compute subject, Delta Gap90, context, and composite grids with progress bars and stop controls.
+   Compute primary and secondary source-station distance, ΔGap, context, and composite grids with progress bars and stop controls.
 3. `Maps`
    Preview contour outputs and the priority-clustering map, then download PNG or KMZ products.
 
@@ -50,6 +60,8 @@ The end-to-end workflow is summarized here:
 <img src="./figures/workflow_flowchart_ssa.png" alt="Workflow figure" width="100%" />
 
 ## Input Data
+
+Event and station inputs can be provided either as CSV files with the columns described below or as FDSNWS event/station files in text format.
 
 ### Required event columns
 
@@ -68,7 +80,7 @@ The end-to-end workflow is summarized here:
 - `longitude`
 - `value`
 
-Column names can be mapped in the UI, and the loaders also recognize common aliases. The main workflows rely on event location and origin time; magnitude can be included in the catalog if available, but it is not part of the core map interpretation shown here.
+Column names can be mapped in the UI, and the loaders also recognize common aliases. The main workflows rely on event location and origin time.
 
 ## Programmatic Usage
 
@@ -157,50 +169,12 @@ composite = compute_composite_index(merged, params)
 print(composite[["latitude", "longitude", "context_value", "composite_index"]].head())
 ```
 
-## External Seismic-Network Validation
+## Output Examples
 
-Bounded upstream samples for manual launch checks are versioned in [tests/fixtures/external](tests/fixtures/external). They come from official services:
+Panels (a-c) show how adding a new station would affect nearby events. Brighter colors mean that placing a station in that grid cell would impact more recent events. (a) shows how many recency-weighted events would fall within 4 km of a station. (b) shows the same for a 10 km radius. (c) shows how many events would have their maximum azimuthal gap reduced to <=90 deg if a station were placed there. (d) shows the total salt-water-disposal volume within 25 km (in barrels). The black outline marks the Midland Basin:
 
-- SCEDC FDSN event and station services
-- NCEDC FDSN event and station services
-- GeoNet FDSN event and station services
-- GEOFON FDSN event and station services
-- Natural Earth populated places for the optional context layer
+<img width="520" height="500" alt="output example panels" src="https://github.com/user-attachments/assets/3f67335f-5525-4fbe-b931-56f7d7fa2c0d" />
 
-### Refresh the external fixtures
+(a) Map of a composite impact index (ranging from 0 to 1) that combines four metrics-S4, S10, ΔGap <= 90 deg, and SWD after adjusting for scaling, and weighting. Brighter colors highlight areas where a new station would have the most combined benefit. (b) Priority areas determined by k-means clustering of these metrics, ranked by their average composite index (Very High, High, Medium, Low). Blue triangles show current stations; the black outline marks the Midland Basin.
 
-```bash
-python scripts/fetch_external_validation_data.py
-```
-
-### Run the bundled external validation workflows
-
-```bash
-python scripts/validate_external_workflows.py
-```
-
-That script runs bounded end-to-end workflows for SCEDC, NCEDC, and GeoNet with and without context. It also checks that the bundled GEOFON event and station fixtures still parse cleanly, since the GEOFON samples are intentionally sourced from different geographic slices for stretch validation.
-
-### Fetch live FDSN samples manually
-
-The loaders accept the official pipe-delimited FDSN text format directly. For example:
-
-```bash
-curl -L "https://service.scedc.caltech.edu/fdsnws/event/1/query?format=text&starttime=2024-01-01&endtime=2024-01-02&minlatitude=33&maxlatitude=35&minlongitude=-119&maxlongitude=-117&limit=3" -o scedc_events.txt
-curl -L "https://service.scedc.caltech.edu/fdsnws/station/1/query?format=text&level=station&minlatitude=33.70&maxlatitude=33.90&minlongitude=-118.60&maxlongitude=-118.20" -o scedc_stations.txt
-```
-
-You can load those files directly:
-
-```python
-from seisnetinsight import load_events, load_stations
-
-events, _ = load_events("scedc_events.txt", warn=False)
-stations, _ = load_stations("scedc_stations.txt", warn=False)
-```
-
-## Repository Notes
-
-- [sample_files](sample_files) contains the bundled example datasets.
-- [figures](figures) contains the tracked documentation figures used in this README.
-- [scripts](scripts) contains helper utilities for fixture refresh, validation, benchmarking, report generation, and smoke testing.
+<img width="900" height="521" alt="composite and priority example" src="https://github.com/user-attachments/assets/53a6fec4-0de5-4c7e-8e01-c358656033da" />

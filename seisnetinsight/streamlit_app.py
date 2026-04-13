@@ -360,9 +360,9 @@ OVERLAY_ALPHA = 0.7
 
 
 LEGACY_FEATURE_ORDER = [
-    ("subject4_within_4km_weighted", "S4 (recency-weighted)"),
-    ("subject10_within_10km_weighted", "S10 (recency-weighted)"),
-    ("delta_gap90_weighted", "ΔGap90 (recency-weighted)"),
+    ("subject4_within_4km_weighted", "Primary source-station distance (recency-weighted)"),
+    ("subject10_within_10km_weighted", "Secondary source-station distance (recency-weighted)"),
+    ("delta_gap90_weighted", "ΔGap (recency-weighted)"),
     ("context_value", "Context layer"),
     ("composite_index", "Composite index"),
 ]
@@ -687,7 +687,7 @@ def build_working_session(
 
 def _run_subject_grid(session: WorkingSession) -> None:
     status = st.empty()
-    progress = st.progress(0.0, text="Starting subject grids…")
+    progress = st.progress(0.0, text="Starting source-station distance grids…")
 
     def update(fraction: float, message: str) -> None:
         progress.progress(min(fraction, 1.0), text=message)
@@ -705,11 +705,11 @@ def _run_subject_grid(session: WorkingSession) -> None:
         session.grids["subject"] = result
         if session.storage:
             session.storage.save_dataframe(result, "subject")
-        status.success("Subject grids computed.")
+        status.success("Primary and secondary source-station distance grids computed.")
     except InterruptedError:
-        status.warning("Subject grids computation stopped by user.")
+        status.warning("Source-station distance grid computation stopped by user.")
     except Exception as exc:
-        status.error(f"Failed to compute subject grids: {exc}")
+        status.error(f"Failed to compute source-station distance grids: {exc}")
     finally:
         progress.empty()
         _reset_stop("subject")
@@ -718,7 +718,7 @@ def _run_subject_grid(session: WorkingSession) -> None:
 
 def _run_gap_grid(session: WorkingSession) -> None:
     status = st.empty()
-    progress = st.progress(0.0, text="Starting ΔGap90 grid…")
+    progress = st.progress(0.0, text="Starting ΔGap grid…")
 
     def update(fraction: float, message: str) -> None:
         progress.progress(min(fraction, 1.0), text=message)
@@ -736,11 +736,11 @@ def _run_gap_grid(session: WorkingSession) -> None:
         session.grids["gap"] = result
         if session.storage:
             session.storage.save_dataframe(result, "gap")
-        status.success("ΔGap90 grid computed.")
+        status.success("ΔGap grid computed.")
     except InterruptedError:
-        status.warning("ΔGap90 computation stopped by user.")
+        status.warning("ΔGap computation stopped by user.")
     except Exception as exc:
-        status.error(f"Failed to compute ΔGap90 grid: {exc}")
+        status.error(f"Failed to compute ΔGap grid: {exc}")
     finally:
         progress.empty()
         _reset_stop("gap")
@@ -782,7 +782,7 @@ def _run_context_grid(session: WorkingSession) -> None:
 def _run_composite_grid(session: WorkingSession) -> None:
     merged = session.merged()
     if merged is None:
-        st.warning("Compute subject and ΔGap90 grids before the composite index.")
+        st.warning("Compute the source-station distance and ΔGap grids before the composite index.")
         return
     try:
         composite = compute_composite_index(merged, session.parameters)
@@ -835,40 +835,40 @@ def _render_data_loading(session: WorkingSession) -> None:
             step=0.001,
         )
 
-    st.markdown("**Subject weighting**")
+    st.markdown("**Source-station distance weighting**")
     subject_primary_cols = st.columns(3)
     with subject_primary_cols[0]:
         primary_radius = st.number_input(
-            "Subject primary radius (km)",
+            "Primary source-station distance radius (km)",
             value=float(session.parameters.subject_primary_radius_km),
         )
     with subject_primary_cols[1]:
         primary_min = st.number_input(
-            "Minimum stations within primary radius",
+            "Minimum stations within primary distance",
             value=int(session.parameters.subject_primary_min_stations),
             min_value=0,
         )
     with subject_primary_cols[2]:
         primary_weight = st.number_input(
-            "Weight subject primary",
+            "Weight primary source-station distance",
             value=float(session.parameters.subject_primary_weight),
         )
 
     subject_secondary_cols = st.columns(3)
     with subject_secondary_cols[0]:
         secondary_radius = st.number_input(
-            "Subject secondary radius (km)",
+            "Secondary source-station distance radius (km)",
             value=float(session.parameters.subject_secondary_radius_km),
         )
     with subject_secondary_cols[1]:
         secondary_min = st.number_input(
-            "Minimum stations within secondary radius",
+            "Minimum stations within secondary distance",
             value=int(session.parameters.subject_secondary_min_stations),
             min_value=0,
         )
     with subject_secondary_cols[2]:
         secondary_weight = st.number_input(
-            "Weight subject secondary",
+            "Weight secondary source-station distance",
             value=float(session.parameters.subject_secondary_weight),
         )
 
@@ -888,7 +888,7 @@ def _render_data_loading(session: WorkingSession) -> None:
         )
     with gap_cols[2]:
         weight_gap = st.number_input(
-            "Weight ΔGap90",
+            "Weight ΔGap",
             value=float(session.parameters.weight_gap),
         )
 
@@ -1157,8 +1157,8 @@ def _render_grid_section(session: WorkingSession) -> None:
             runner(session)
             stop_placeholder.empty()
 
-    run_with_stop("subject", "subject grids", _run_subject_grid)
-    run_with_stop("gap", "ΔGap90 grid", _run_gap_grid)
+    run_with_stop("subject", "primary and secondary source-station distance grids", _run_subject_grid)
+    run_with_stop("gap", "ΔGap grid", _run_gap_grid)
     run_with_stop("context", f"{session.context_label} grid", _run_context_grid)
 
     if st.button("Re-compute composite index"):
