@@ -18,6 +18,13 @@ from pyproj import Geod
 from .config import GridParameters
 from .maps import PRIORITY_COLORS, PRIORITY_LEVELS
 
+REFERENCE_CITIES: Tuple[Tuple[str, float, float], ...] = (
+    ("Midland, TX", -102.077408, 32.000507),
+    ("Odessa, TX", -102.367645, 31.845682),
+    ("Lubbock, TX", -101.855166, 33.577863),
+    ("Big Spring, TX", -101.479073, 32.250286),
+)
+
 
 @dataclass
 class LegacyMapConfig:
@@ -80,6 +87,19 @@ def _parse_bna_lines(bna_bytes: bytes) -> List[np.ndarray]:
 
 
 GEOD = Geod(ellps="WGS84")
+
+
+def _cities_within_aoi(
+    params: GridParameters,
+    cities: Sequence[Tuple[str, float, float]] = REFERENCE_CITIES,
+) -> List[Tuple[str, float, float]]:
+    lon_min, lon_max = sorted(params.lons)
+    lat_min, lat_max = sorted(params.lats)
+    visible: List[Tuple[str, float, float]] = []
+    for name, lon, lat in cities:
+        if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
+            visible.append((name, lon, lat))
+    return visible
 
 
 def _add_scale_bar(
@@ -189,13 +209,7 @@ def render_legacy_contour(
     ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=2)
 
     if config.show_cities:
-        cities = [
-            ("Midland, TX", -102.077408, 32.000507),
-            ("Odessa, TX", -102.367645, 31.845682),
-            ("Lubbock, TX", -101.855166, 33.577863),
-            ("Big Spring, TX", -101.479073, 32.250286),
-        ]
-        for name, lon, lat in cities:
+        for name, lon, lat in _cities_within_aoi(params):
             ax.text(lon, lat, name, fontsize=5, ha="right", color="gray", transform=ccrs.PlateCarree(), zorder=3)
 
     cs = ax.contourf(lons, lats, Z, levels=levels, cmap=cmap, transform=ccrs.PlateCarree(), alpha=0.9)
@@ -212,7 +226,8 @@ def render_legacy_contour(
 
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title(value_col if title is None else title, fontsize=10)
+    if title:
+        ax.set_title(title, fontsize=10)
 
     return fig
 
@@ -298,13 +313,7 @@ def render_priority_clusters(
     ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=5)
 
     if config.show_cities:
-        cities = [
-            ("Midland, TX", -102.077408, 32.000507),
-            ("Odessa, TX", -102.367645, 31.845682),
-            ("Lubbock, TX", -101.855166, 33.577863),
-            ("Big Spring, TX", -101.479073, 32.250286),
-        ]
-        for name, lon, lat in cities:
+        for name, lon, lat in _cities_within_aoi(params):
             ax.text(lon, lat, name, fontsize=5, ha="right", color="gray", transform=ccrs.PlateCarree(), zorder=5)
 
     if stations is not None and not stations.empty:

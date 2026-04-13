@@ -184,6 +184,14 @@ class WorkingSession:
     def data_loaded(self) -> bool:
         return self.events is not None and self.stations is not None
 
+    @property
+    def has_context_input(self) -> bool:
+        return self.context is not None and not self.context.empty
+
+    @property
+    def has_context_map_data(self) -> bool:
+        return self.has_context_input
+
     def ensure_grid(self) -> GridDefinition:
         if self.grid is None:
             self.grid = generate_grid(self.parameters)
@@ -748,6 +756,14 @@ def _run_gap_grid(session: WorkingSession) -> None:
 
 
 def _run_context_grid(session: WorkingSession) -> None:
+    if not session.has_context_input:
+        session.grids.pop("context", None)
+        if session.storage is not None and "context" in session.storage.grids:
+            session.storage.grids.pop("context", None)
+            session.storage.save_metadata()
+        st.session_state[_run_key("context")] = False
+        return
+
     status = st.empty()
     progress = st.progress(0.0, text="Starting context grid…")
 
@@ -1125,10 +1141,11 @@ def _render_data_loading(session: WorkingSession) -> None:
         if run_all:
             st.session_state[_run_key("subject")] = True
             st.session_state[_run_key("gap")] = True
-            st.session_state[_run_key("context")] = True
+            st.session_state[_run_key("context")] = bool(new_session.has_context_input)
             _run_subject_grid(new_session)
             _run_gap_grid(new_session)
-            _run_context_grid(new_session)
+            if new_session.has_context_input:
+                _run_context_grid(new_session)
             _run_composite_grid(new_session)
 
     col1, col2 = st.columns(2)
@@ -1159,7 +1176,8 @@ def _render_grid_section(session: WorkingSession) -> None:
 
     run_with_stop("subject", "primary and secondary source-station distance grids", _run_subject_grid)
     run_with_stop("gap", "ΔGap grid", _run_gap_grid)
-    run_with_stop("context", f"{session.context_label} grid", _run_context_grid)
+    if session.has_context_input:
+        run_with_stop("context", f"{session.context_label} grid", _run_context_grid)
 
     if st.button("Re-compute composite index"):
         _run_composite_grid(session)
@@ -1192,6 +1210,8 @@ def _render_maps_section(session: WorkingSession) -> None:
     for feature, label in LEGACY_FEATURE_ORDER:
         if feature not in legacy_df.columns:
             continue
+        if feature == "context_value" and not session.has_context_map_data:
+            continue
         if feature == "context_value":
             label = (
                 f"{session.context_label} "
@@ -1204,7 +1224,7 @@ def _render_maps_section(session: WorkingSession) -> None:
                 session.parameters,
                 config=config,
                 bna_bytes=bna_bytes,
-                title=label,
+                colorbar_label=label,
             )
             png_bytes = figure_png_bytes(fig)
             st.image(png_bytes, caption=label)
