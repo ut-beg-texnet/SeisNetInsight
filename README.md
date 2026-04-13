@@ -30,8 +30,8 @@ seisnetinsight-app
 ```
 
 ## UI Overview
+<!-- <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/4b028db1-1b23-41fe-969b-de0d26c31011" /> -->
 
-<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/4b028db1-1b23-41fe-969b-de0d26c31011" />
 
 
 ![SeisNetInsight animated UI overview](https://github.com/user-attachments/assets/358e7c7b-75b3-4b87-8a9c-7f8350d09706)
@@ -57,7 +57,7 @@ The core method remains grounded in source-to-station distance and azimuthal cov
 <img width="5141" height="1535" alt="image" src="https://github.com/user-attachments/assets/5dbc6389-419b-4af7-8b1e-6284705f48fc" />
 
 The end-to-end workflow is summarized here:
-<img width="5141" height="1535" alt="image" src="https://github.com/user-attachments/assets/851d5ed0-5f6f-4b7c-8404-b6e619ce0f4c" />
+<img width="1969" height="829" alt="image" src="https://github.com/user-attachments/assets/8136ad2b-d4d3-43b8-9282-64bd9cb355ab" />
 
 ## Input Data
 
