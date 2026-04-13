@@ -59,7 +59,6 @@ def _default_event_columns() -> Dict[str, str]:
     return {
         "latitude": "latitude",
         "longitude": "longitude",
-        "magnitude": "magnitude",
         "origin_time": "origin_time",
     }
 
@@ -229,6 +228,59 @@ class WorkingSession:
 
 
 SESSION_KEY = "seisnetinsight_session"
+FORM_SESSION_NAME_KEY = "form_session_name"
+FORM_LONS_KEY = "form_lons"
+FORM_LATS_KEY = "form_lats"
+FORM_GRID_STEP_KEY = "form_grid_step"
+FORM_PRIMARY_RADIUS_KEY = "form_primary_radius"
+FORM_PRIMARY_MIN_KEY = "form_primary_min"
+FORM_PRIMARY_WEIGHT_KEY = "form_primary_weight"
+FORM_SECONDARY_RADIUS_KEY = "form_secondary_radius"
+FORM_SECONDARY_MIN_KEY = "form_secondary_min"
+FORM_SECONDARY_WEIGHT_KEY = "form_secondary_weight"
+FORM_GAP_SEARCH_KEY = "form_gap_search"
+FORM_GAP_TARGET_KEY = "form_gap_target"
+FORM_WEIGHT_GAP_KEY = "form_weight_gap"
+FORM_CONTEXT_LABEL_KEY = "form_context_label"
+FORM_CONTEXT_RADIUS_KEY = "form_context_radius"
+FORM_CONTEXT_AGGREGATION_KEY = "form_context_aggregation"
+FORM_WEIGHT_CONTEXT_KEY = "form_weight_context"
+FORM_HALF_TIME_KEY = "form_half_time"
+FORM_OVERWRITE_KEY = "form_overwrite"
+FORM_BALLTREE_ENABLED_KEY = "form_balltree_enabled"
+FORM_BALLTREE_DISTANCE_KEY = "form_balltree_distance"
+
+
+def _session_form_defaults(session: WorkingSession) -> Dict[str, object]:
+    return {
+        FORM_SESSION_NAME_KEY: session.name,
+        FORM_LONS_KEY: ",".join(map(str, session.parameters.lons)),
+        FORM_LATS_KEY: ",".join(map(str, session.parameters.lats)),
+        FORM_GRID_STEP_KEY: float(session.parameters.grid_step),
+        FORM_PRIMARY_RADIUS_KEY: float(session.parameters.subject_primary_radius_km),
+        FORM_PRIMARY_MIN_KEY: int(session.parameters.subject_primary_min_stations),
+        FORM_PRIMARY_WEIGHT_KEY: float(session.parameters.subject_primary_weight),
+        FORM_SECONDARY_RADIUS_KEY: float(session.parameters.subject_secondary_radius_km),
+        FORM_SECONDARY_MIN_KEY: int(session.parameters.subject_secondary_min_stations),
+        FORM_SECONDARY_WEIGHT_KEY: float(session.parameters.subject_secondary_weight),
+        FORM_GAP_SEARCH_KEY: float(session.parameters.gap_search_km),
+        FORM_GAP_TARGET_KEY: float(getattr(session.parameters, "gap_target_angle_deg", 90.0)),
+        FORM_WEIGHT_GAP_KEY: float(session.parameters.weight_gap),
+        FORM_CONTEXT_LABEL_KEY: session.context_label,
+        FORM_CONTEXT_RADIUS_KEY: float(session.parameters.context_radius_km),
+        FORM_CONTEXT_AGGREGATION_KEY: session.parameters.context_aggregation,
+        FORM_WEIGHT_CONTEXT_KEY: float(session.parameters.weight_context),
+        FORM_HALF_TIME_KEY: float(session.parameters.half_time_years),
+        FORM_OVERWRITE_KEY: bool(session.parameters.overwrite),
+        FORM_BALLTREE_ENABLED_KEY: bool(session.balltree_enabled),
+        FORM_BALLTREE_DISTANCE_KEY: float(session.balltree_distance),
+    }
+
+
+def _populate_form_state_from_session(session: WorkingSession, *, overwrite: bool = False) -> None:
+    for key, value in _session_form_defaults(session).items():
+        if overwrite or key not in st.session_state:
+            st.session_state[key] = value
 
 
 def _required_cartopy_specs(params: GridParameters) -> List[Dict[str, str]]:
@@ -511,6 +563,7 @@ def get_working_session() -> WorkingSession:
 
 def set_working_session(session: WorkingSession) -> None:
     st.session_state[SESSION_KEY] = session
+    _populate_form_state_from_session(session, overwrite=True)
 
 
 def _stop_key(name: str) -> str:
@@ -623,6 +676,11 @@ def _save_sources(
     session.storage.save_source(stations, "stations")
     if context is not None:
         session.storage.save_source(context, "context")
+    else:
+        session.storage.clear_source("context")
+        session.storage.clear_source("swd")
+        session.storage.clear_dataframe("context")
+        session.storage.clear_dataframe("swd")
     session.storage.save_metadata()
 
 
@@ -812,6 +870,7 @@ def _run_composite_grid(session: WorkingSession) -> None:
 
 def _render_data_loading(session: WorkingSession) -> None:
     st.header("1. Data Loading")
+    _populate_form_state_from_session(session)
     existing_sessions = list_sessions()
     if existing_sessions:
         st.markdown("**Restore previous session**")
@@ -822,11 +881,12 @@ def _render_data_loading(session: WorkingSession) -> None:
                 new_session = _load_session_from_disk(selected_name)
                 set_working_session(new_session)
                 st.success(f"Session '{selected_name}' loaded.")
+                st.rerun()
             except Exception as exc:
                 st.error(f"Failed to load session: {exc}")
     st.markdown("---")
     st.subheader("New session setup")
-    session_name = st.text_input("Session name", value=session.name)
+    session_name = st.text_input("Session name", key=FORM_SESSION_NAME_KEY)
 
     gap_target_angle_default = float(getattr(session.parameters, "gap_target_angle_deg", 90.0))
     if not hasattr(session.parameters, "gap_target_angle_deg"):
@@ -836,19 +896,19 @@ def _render_data_loading(session: WorkingSession) -> None:
     with bounds_cols[0]:
         lons_input = st.text_input(
             "Longitude bounds (min,max)",
-            value=",".join(map(str, session.parameters.lons)),
+            key=FORM_LONS_KEY,
         )
     with bounds_cols[1]:
         lats_input = st.text_input(
             "Latitude bounds (min,max)",
-            value=",".join(map(str, session.parameters.lats)),
+            key=FORM_LATS_KEY,
         )
     with bounds_cols[2]:
         grid_step = st.number_input(
             "Grid step (degrees)",
-            value=float(session.parameters.grid_step),
             min_value=0.001,
             step=0.001,
+            key=FORM_GRID_STEP_KEY,
         )
 
     st.markdown("**Source-station distance weighting**")
@@ -856,102 +916,103 @@ def _render_data_loading(session: WorkingSession) -> None:
     with subject_primary_cols[0]:
         primary_radius = st.number_input(
             "Primary source-station distance radius (km)",
-            value=float(session.parameters.subject_primary_radius_km),
+            key=FORM_PRIMARY_RADIUS_KEY,
         )
     with subject_primary_cols[1]:
         primary_min = st.number_input(
             "Minimum stations within primary distance",
-            value=int(session.parameters.subject_primary_min_stations),
             min_value=0,
+            key=FORM_PRIMARY_MIN_KEY,
         )
     with subject_primary_cols[2]:
         primary_weight = st.number_input(
             "Weight primary source-station distance",
-            value=float(session.parameters.subject_primary_weight),
+            key=FORM_PRIMARY_WEIGHT_KEY,
         )
 
     subject_secondary_cols = st.columns(3)
     with subject_secondary_cols[0]:
         secondary_radius = st.number_input(
             "Secondary source-station distance radius (km)",
-            value=float(session.parameters.subject_secondary_radius_km),
+            key=FORM_SECONDARY_RADIUS_KEY,
         )
     with subject_secondary_cols[1]:
         secondary_min = st.number_input(
             "Minimum stations within secondary distance",
-            value=int(session.parameters.subject_secondary_min_stations),
             min_value=0,
+            key=FORM_SECONDARY_MIN_KEY,
         )
     with subject_secondary_cols[2]:
         secondary_weight = st.number_input(
             "Weight secondary source-station distance",
-            value=float(session.parameters.subject_secondary_weight),
+            key=FORM_SECONDARY_WEIGHT_KEY,
         )
 
     gap_cols = st.columns(3)
     with gap_cols[0]:
         gap_search = st.number_input(
             "Gap search radius (km)",
-            value=float(session.parameters.gap_search_km),
+            key=FORM_GAP_SEARCH_KEY,
         )
     with gap_cols[1]:
         gap_target_angle = st.number_input(
             "ΔGap target angle (°)",
-            value=float(getattr(session.parameters, "gap_target_angle_deg", gap_target_angle_default)),
             min_value=0.0,
             max_value=360.0,
             step=1.0,
+            key=FORM_GAP_TARGET_KEY,
         )
     with gap_cols[2]:
         weight_gap = st.number_input(
             "Weight ΔGap",
-            value=float(session.parameters.weight_gap),
+            key=FORM_WEIGHT_GAP_KEY,
         )
 
     context_cols = st.columns(4)
     with context_cols[0]:
-        context_label = st.text_input("Context layer name", value=session.context_label)
+        context_label = st.text_input("Context layer name", key=FORM_CONTEXT_LABEL_KEY)
     with context_cols[1]:
         context_radius = st.number_input(
             "Context radius (km)",
-            value=float(session.parameters.context_radius_km),
+            key=FORM_CONTEXT_RADIUS_KEY,
         )
     with context_cols[2]:
         aggregation_options = ["sum", "average", "count", "min", "max"]
         aggregation_index = aggregation_options.index(
-            session.parameters.context_aggregation
-            if session.parameters.context_aggregation in aggregation_options
+            st.session_state.get(FORM_CONTEXT_AGGREGATION_KEY)
+            if st.session_state.get(FORM_CONTEXT_AGGREGATION_KEY) in aggregation_options
             else "sum"
         )
         context_aggregation = st.selectbox(
             "Context aggregation",
             aggregation_options,
             index=aggregation_index,
+            key=FORM_CONTEXT_AGGREGATION_KEY,
         )
     with context_cols[3]:
         weight_context = st.number_input(
             "Weight context",
-            value=float(session.parameters.weight_context),
+            key=FORM_WEIGHT_CONTEXT_KEY,
         )
 
     final_cols = st.columns(2)
     with final_cols[0]:
         half_time = st.number_input(
             "Half-time (years)",
-            value=float(session.parameters.half_time_years),
+            key=FORM_HALF_TIME_KEY,
         )
     with final_cols[1]:
-        overwrite = st.checkbox("Overwrite cached grids", value=session.parameters.overwrite)
+        overwrite = st.checkbox("Overwrite cached grids", key=FORM_OVERWRITE_KEY)
 
     balltree_cols = st.columns(2)
     with balltree_cols[0]:
-        balltree_enabled = st.checkbox("Apply BallTree data reduction", value=session.balltree_enabled)
+        balltree_enabled = st.checkbox("Apply BallTree data reduction", key=FORM_BALLTREE_ENABLED_KEY)
     with balltree_cols[1]:
         balltree_distance = st.number_input(
             "BallTree distance threshold (km)",
-            value=float(session.balltree_distance),
             min_value=0.1,
             step=0.1,
+            key=FORM_BALLTREE_DISTANCE_KEY,
         )
 
     events_file = st.file_uploader("Events file", type=["csv"])
@@ -973,7 +1034,6 @@ def _render_data_loading(session: WorkingSession) -> None:
                 [
                     ("latitude", "Latitude"),
                     ("longitude", "Longitude"),
-                    ("magnitude", "Magnitude"),
                     ("origin_time", "Origin time"),
                 ],
                 event_columns,

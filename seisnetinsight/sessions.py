@@ -138,6 +138,25 @@ class SessionState:
         setattr(self.files, key, path.name)
         self.save_metadata()
 
+    def clear_dataframe(self, key: str) -> None:
+        directory = self.directory()
+        filename = self.grids.pop(key, None)
+        if filename:
+            path = directory / filename
+            if path.exists():
+                path.unlink()
+        self.save_metadata()
+
+    def clear_source(self, key: str) -> None:
+        directory = self.directory()
+        filename = getattr(self.files, key, None)
+        if filename:
+            path = directory / filename
+            if path.exists():
+                path.unlink()
+        setattr(self.files, key, None)
+        self.save_metadata()
+
     def save_bna(self, filename: str, data: bytes) -> None:
         directory = self.directory()
         directory.mkdir(parents=True, exist_ok=True)

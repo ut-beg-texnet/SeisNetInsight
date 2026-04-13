@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-EXPECTED_EVENT_COLUMNS = ["latitude", "longitude", "magnitude", "origin_time"]
+EXPECTED_EVENT_COLUMNS = ["latitude", "longitude", "origin_time"]
 EXPECTED_STATION_COLUMNS = ["latitude", "longitude"]
 EXPECTED_CONTEXT_COLUMNS = ["latitude", "longitude", "value"]
 EXPECTED_SWD_COLUMNS = ["latitude", "longitude", "volume"]
