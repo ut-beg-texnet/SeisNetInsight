@@ -25,9 +25,26 @@ class GridParameters:
     gap_target_angle_deg: float = 90.0
     weight_gap: float = 0.05
     swd_radius_km: float = 25.0
+    context_aggregation: str = "sum"
     weight_swd: float = 0.2
     half_time_years: float = 5.0
     overwrite: bool = False
+
+    @property
+    def context_radius_km(self) -> float:
+        return self.swd_radius_km
+
+    @context_radius_km.setter
+    def context_radius_km(self, value: float) -> None:
+        self.swd_radius_km = float(value)
+
+    @property
+    def weight_context(self) -> float:
+        return self.weight_swd
+
+    @weight_context.setter
+    def weight_context(self, value: float) -> None:
+        self.weight_swd = float(value)
 
     def bounds(self) -> Dict[str, Tuple[float, float]]:
         return {
@@ -40,32 +57,16 @@ class GridParameters:
             "subject_primary": max(self.subject_primary_weight, 0.0),
             "subject_secondary": max(self.subject_secondary_weight, 0.0),
             "gap": max(self.weight_gap, 0.0),
-            "swd": max(self.weight_swd, 0.0),
+            "context": max(self.weight_context, 0.0),
         }
         total = sum(weights.values())
         if total == 0:
-            return {k: 0.0 for k in weights}
-        return {k: v / total for k, v in weights.items()}
-
-
-DEFAULT_PARAMETER_NAMES = [
-    "LONS",
-    "LATS",
-    "GRID_STEP",
-    "SUBJECT_PRIMARY_RADIUS_KM",
-    "SUBJECT_PRIMARY_MIN_STATIONS",
-    "SUBJECT_PRIMARY_WEIGHT",
-    "SUBJECT_SECONDARY_RADIUS_KM",
-    "SUBJECT_SECONDARY_MIN_STATIONS",
-    "SUBJECT_SECONDARY_WEIGHT",
-    "GAP_SEARCH_KM",
-    "GAP_TARGET_ANGLE",
-    "WEIGHT_GAP",
-    "SWD_RADIUS_KM",
-    "WEIGHT_SWD",
-    "HALF_TIME_YEARS",
-    "OVERWRITE",
-]
+            normalized = {k: 0.0 for k in weights}
+        else:
+            normalized = {k: v / total for k, v in weights.items()}
+        # Keep the legacy SWD key readable for older callers.
+        normalized["swd"] = normalized["context"]
+        return normalized
 
 
 def default_parameters() -> GridParameters:
@@ -130,10 +131,14 @@ def parameter_from_inputs(inputs: Dict[str, object], logger: Optional[Callable[[
     params.gap_search_km = float(get("GAP_SEARCH_KM", params.gap_search_km))
     params.gap_target_angle_deg = float(get("GAP_TARGET_ANGLE", params.gap_target_angle_deg))
     params.weight_gap = float(get("WEIGHT_GAP", params.weight_gap))
-    params.swd_radius_km = float(get("SWD_RADIUS_KM", params.swd_radius_km))
-    params.weight_swd = float(get("WEIGHT_SWD", params.weight_swd))
+    params.context_radius_km = float(
+        get(("CONTEXT_RADIUS_KM", "SWD_RADIUS_KM"), params.context_radius_km)
+    )
+    params.context_aggregation = str(get("CONTEXT_AGGREGATION", params.context_aggregation)).strip().lower() or "sum"
+    params.weight_context = float(get(("WEIGHT_CONTEXT", "WEIGHT_SWD"), params.weight_context))
     params.half_time_years = float(get("HALF_TIME_YEARS", params.half_time_years))
-    params.overwrite = bool(get("OVERWRITE", params.overwrite))
+    if "OVERWRITE" in inputs:
+        params.overwrite = bool(get("OVERWRITE", params.overwrite))
     return params
 
 
@@ -151,6 +156,10 @@ def parameter_dict(params: GridParameters) -> Dict[str, object]:
         "GAP_SEARCH_KM": params.gap_search_km,
         "GAP_TARGET_ANGLE": getattr(params, "gap_target_angle_deg", 90.0),
         "WEIGHT_GAP": params.weight_gap,
+        "CONTEXT_RADIUS_KM": params.context_radius_km,
+        "CONTEXT_AGGREGATION": params.context_aggregation,
+        "WEIGHT_CONTEXT": params.weight_context,
+        # Persist legacy keys too so older sessions remain easy to inspect and restore.
         "SWD_RADIUS_KM": params.swd_radius_km,
         "WEIGHT_SWD": params.weight_swd,
         "HALF_TIME_YEARS": params.half_time_years,

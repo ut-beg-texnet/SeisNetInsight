@@ -19,6 +19,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 class SessionFiles:
     events: Optional[str] = None
     stations: Optional[str] = None
+    context: Optional[str] = None
     swd: Optional[str] = None
     bna_files: List[str] = field(default_factory=list)
 
@@ -30,6 +31,7 @@ class SessionState:
     files: SessionFiles
     grids: Dict[str, str] = field(default_factory=dict)
     column_mapping: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    context_label: str = "Context layer"
 
     def directory(self) -> Path:
         return SESSION_ROOT / self.name
@@ -42,6 +44,7 @@ class SessionState:
             "files": asdict(self.files),
             "grids": self.grids,
             "column_mapping": self.column_mapping,
+            "context_label": self.context_label,
         }
         (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
@@ -88,8 +91,11 @@ class SessionState:
         params.gap_search_km = _get("GAP_SEARCH_KM", None, float, params.gap_search_km)
         params.gap_target_angle_deg = _get("GAP_TARGET_ANGLE", None, float, params.gap_target_angle_deg)
         params.weight_gap = _get("WEIGHT_GAP", None, float, params.weight_gap)
-        params.swd_radius_km = _get("SWD_RADIUS_KM", None, float, params.swd_radius_km)
-        params.weight_swd = _get("WEIGHT_SWD", None, float, params.weight_swd)
+        params.context_radius_km = _get("CONTEXT_RADIUS_KM", "SWD_RADIUS_KM", float, params.context_radius_km)
+        params.context_aggregation = str(
+            raw_params.get("CONTEXT_AGGREGATION", getattr(params, "context_aggregation", "sum"))
+        ).strip().lower() or "sum"
+        params.weight_context = _get("WEIGHT_CONTEXT", "WEIGHT_SWD", float, params.weight_context)
 
         def _to_bool(value: object, default: bool) -> bool:
             if isinstance(value, bool):
@@ -107,6 +113,7 @@ class SessionState:
             files=files,
             grids=metadata.get("grids", {}),
             column_mapping=metadata.get("column_mapping", {}),
+            context_label=metadata.get("context_label", "Context layer"),
         )
 
     def save_dataframe(self, df: pd.DataFrame, key: str) -> None:
@@ -131,6 +138,25 @@ class SessionState:
         setattr(self.files, key, path.name)
         self.save_metadata()
 
+    def clear_dataframe(self, key: str) -> None:
+        directory = self.directory()
+        filename = self.grids.pop(key, None)
+        if filename:
+            path = directory / filename
+            if path.exists():
+                path.unlink()
+        self.save_metadata()
+
+    def clear_source(self, key: str) -> None:
+        directory = self.directory()
+        filename = getattr(self.files, key, None)
+        if filename:
+            path = directory / filename
+            if path.exists():
+                path.unlink()
+        setattr(self.files, key, None)
+        self.save_metadata()
+
     def save_bna(self, filename: str, data: bytes) -> None:
         directory = self.directory()
         directory.mkdir(parents=True, exist_ok=True)
@@ -141,7 +167,9 @@ class SessionState:
         self.save_metadata()
 
     def load_source(self, key: str) -> Optional[pd.DataFrame]:
-        filename = getattr(self.files, key)
+        filename = getattr(self.files, key, None)
+        if key == "context" and not filename:
+            filename = getattr(self.files, "swd", None)
         if not filename:
             return None
         path = self.directory() / filename
