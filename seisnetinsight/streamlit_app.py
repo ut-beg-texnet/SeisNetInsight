@@ -133,6 +133,7 @@ def _render_column_selectors(
     current_mapping: Dict[str, str],
     defaults: Dict[str, str],
     key_prefix: str,
+    field_help: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     if not available_columns:
         return current_mapping
@@ -153,6 +154,7 @@ def _render_column_selectors(
             options,
             index=index,
             key=f"{key_prefix}_{canonical}",
+            help=field_help.get(canonical) if field_help else None,
         )
         if selection == placeholder:
             selection = default_choice or current_mapping.get(canonical, "")
@@ -228,6 +230,7 @@ class WorkingSession:
 
 
 SESSION_KEY = "seisnetinsight_session"
+SESSION_FEEDBACK_KEY = "seisnetinsight_session_feedback"
 FORM_SESSION_NAME_KEY = "form_session_name"
 FORM_LONS_KEY = "form_lons"
 FORM_LATS_KEY = "form_lats"
@@ -246,9 +249,25 @@ FORM_CONTEXT_RADIUS_KEY = "form_context_radius"
 FORM_CONTEXT_AGGREGATION_KEY = "form_context_aggregation"
 FORM_WEIGHT_CONTEXT_KEY = "form_weight_context"
 FORM_HALF_TIME_KEY = "form_half_time"
-FORM_OVERWRITE_KEY = "form_overwrite"
 FORM_BALLTREE_ENABLED_KEY = "form_balltree_enabled"
 FORM_BALLTREE_DISTANCE_KEY = "form_balltree_distance"
+
+EVENT_COLUMN_HELP = {
+    "latitude": "Column containing event latitude in decimal degrees.",
+    "longitude": "Column containing event longitude in decimal degrees.",
+    "origin_time": "Column containing the event origin timestamp used for recency weighting.",
+}
+
+STATION_COLUMN_HELP = {
+    "latitude": "Column containing station latitude in decimal degrees.",
+    "longitude": "Column containing station longitude in decimal degrees.",
+}
+
+CONTEXT_COLUMN_HELP = {
+    "latitude": "Column containing context-point latitude in decimal degrees.",
+    "longitude": "Column containing context-point longitude in decimal degrees.",
+    "value": "Numeric column aggregated within the selected context radius.",
+}
 
 
 def _session_form_defaults(session: WorkingSession) -> Dict[str, object]:
@@ -271,7 +290,6 @@ def _session_form_defaults(session: WorkingSession) -> Dict[str, object]:
         FORM_CONTEXT_AGGREGATION_KEY: session.parameters.context_aggregation,
         FORM_WEIGHT_CONTEXT_KEY: float(session.parameters.weight_context),
         FORM_HALF_TIME_KEY: float(session.parameters.half_time_years),
-        FORM_OVERWRITE_KEY: bool(session.parameters.overwrite),
         FORM_BALLTREE_ENABLED_KEY: bool(session.balltree_enabled),
         FORM_BALLTREE_DISTANCE_KEY: float(session.balltree_distance),
     }
@@ -281,6 +299,73 @@ def _populate_form_state_from_session(session: WorkingSession, *, overwrite: boo
     for key, value in _session_form_defaults(session).items():
         if overwrite or key not in st.session_state:
             st.session_state[key] = value
+
+
+def _pluralize(count: int, singular: str, plural: Optional[str] = None) -> str:
+    if count == 1:
+        return singular
+    return plural or f"{singular}s"
+
+
+def _session_feedback_details(session: WorkingSession, action: str) -> List[str]:
+    details = [
+        (
+            f"{action} form values and grid settings for "
+            f"{session.parameters.lons[0]:g},{session.parameters.lons[1]:g} / "
+            f"{session.parameters.lats[0]:g},{session.parameters.lats[1]:g}."
+        )
+    ]
+    if session.events is not None:
+        details.append(f"{action} events catalog: {len(session.events)} {_pluralize(len(session.events), 'row')}.")
+    if session.stations is not None:
+        details.append(
+            f"{action} stations catalog: {len(session.stations)} {_pluralize(len(session.stations), 'row')}."
+        )
+    if session.context is not None:
+        details.append(
+            f"{action} {session.context_label.lower()}: {len(session.context)} {_pluralize(len(session.context), 'row')}."
+        )
+    else:
+        details.append(f"{action} no context layer.")
+    bna_count = len(session.bna_files)
+    if session.storage:
+        bna_count = max(bna_count, len(session.storage.list_bna()))
+    details.append(f"{action} {bna_count} {_pluralize(bna_count, 'BNA overlay')}.")
+    grid_names = sorted(session.grids)
+    if grid_names:
+        details.append(f"{action} cached grids: {', '.join(grid_names)}.")
+    else:
+        details.append(f"{action} no cached grids yet.")
+    return details
+
+
+def _queue_session_feedback(kind: str, title: str, details: List[str]) -> None:
+    st.session_state[SESSION_FEEDBACK_KEY] = {
+        "kind": kind,
+        "title": title,
+        "details": details,
+    }
+
+
+def _render_session_feedback(*, consume: bool = True) -> None:
+    payload = st.session_state.get(SESSION_FEEDBACK_KEY)
+    if not payload:
+        return
+    kind = str(payload.get("kind", "info"))
+    title = str(payload.get("title", ""))
+    details = [str(item) for item in payload.get("details", [])]
+    renderer = {
+        "success": st.success,
+        "warning": st.warning,
+        "error": st.error,
+    }.get(kind, st.info)
+    renderer(title)
+    if details:
+        with st.expander("Details", expanded=True):
+            for item in details:
+                st.markdown(f"- {item}")
+    if consume:
+        st.session_state.pop(SESSION_FEEDBACK_KEY, None)
 
 
 def _required_cartopy_specs(params: GridParameters) -> List[Dict[str, str]]:
@@ -381,7 +466,11 @@ def _ensure_cartopy_map_data(params: GridParameters) -> bool:
     missing_labels = ", ".join(spec["label"] for spec in missing_specs)
     st.caption(f"Missing map datasets: {missing_labels}")
 
-    if st.button("Download map data and continue", key="download_cartopy_map_data"):
+    if st.button(
+        "Download map data and continue",
+        key="download_cartopy_map_data",
+        help="Download the missing Natural Earth basemap files required for static map rendering, then continue to the map previews.",
+    ):
         try:
             with st.spinner("Downloading Cartopy map data…"):
                 _download_cartopy_specs(missing_specs)
@@ -871,22 +960,55 @@ def _run_composite_grid(session: WorkingSession) -> None:
 def _render_data_loading(session: WorkingSession) -> None:
     st.header("1. Data Loading")
     _populate_form_state_from_session(session)
+    _render_session_feedback()
+    if session.storage is None:
+        st.info(
+            "Current state: draft session in memory only. "
+            "A saved session is created when you click `Save session and load data` "
+            "or `Save session, load data, and run all`."
+        )
+    else:
+        st.info(
+            f"Current state: saved session `{session.name}`. "
+            "Editing the fields below updates the draft in memory; the saved session is updated "
+            "the next time you click a save/load button."
+        )
     existing_sessions = list_sessions()
     if existing_sessions:
-        st.markdown("**Restore previous session**")
-        restore_choice = st.checkbox("Restore a session", key="restore_toggle")
-        selected_name = st.selectbox("Available sessions", existing_sessions, disabled=not restore_choice)
-        if restore_choice and st.button("Load session"):
+        st.markdown("**Restore saved session**")
+        restore_choice = st.checkbox(
+            "Restore a saved session",
+            key="restore_toggle",
+            help="Enable this to load saved parameters, uploaded datasets, computed grids, and map-ready outputs from a previous session.",
+        )
+        selected_name = st.selectbox(
+            "Available sessions",
+            existing_sessions,
+            disabled=not restore_choice,
+            help="Choose which saved session to restore.",
+        )
+        if restore_choice and st.button(
+            "Load session",
+            help="Restore the selected session's saved settings, source data, computed grids, and BNA overlays.",
+        ):
             try:
                 new_session = _load_session_from_disk(selected_name)
                 set_working_session(new_session)
-                st.success(f"Session '{selected_name}' loaded.")
+                _queue_session_feedback(
+                    "success",
+                    f"Session '{selected_name}' restored.",
+                    _session_feedback_details(new_session, "Restored"),
+                )
                 st.rerun()
             except Exception as exc:
                 st.error(f"Failed to load session: {exc}")
     st.markdown("---")
-    st.subheader("New session setup")
-    session_name = st.text_input("Session name", key=FORM_SESSION_NAME_KEY)
+    st.subheader("Draft session setup")
+    session_name = st.text_input(
+        "Session name",
+        key=FORM_SESSION_NAME_KEY,
+        help="Name to use when this draft session is saved to disk.",
+    )
 
     gap_target_angle_default = float(getattr(session.parameters, "gap_target_angle_deg", 90.0))
     if not hasattr(session.parameters, "gap_target_angle_deg"):
@@ -897,11 +1019,13 @@ def _render_data_loading(session: WorkingSession) -> None:
         lons_input = st.text_input(
             "Longitude bounds (min,max)",
             key=FORM_LONS_KEY,
+            help="West and east limits of the area of interest in decimal degrees, entered as min,max.",
         )
     with bounds_cols[1]:
         lats_input = st.text_input(
             "Latitude bounds (min,max)",
             key=FORM_LATS_KEY,
+            help="South and north limits of the area of interest in decimal degrees, entered as min,max.",
         )
     with bounds_cols[2]:
         grid_step = st.number_input(
@@ -909,6 +1033,7 @@ def _render_data_loading(session: WorkingSession) -> None:
             min_value=0.001,
             step=0.001,
             key=FORM_GRID_STEP_KEY,
+            help="Grid spacing in decimal degrees. Smaller values produce finer maps but increase computation time.",
         )
 
     st.markdown("**Source-station distance weighting**")
@@ -917,17 +1042,20 @@ def _render_data_loading(session: WorkingSession) -> None:
         primary_radius = st.number_input(
             "Primary source-station distance radius (km)",
             key=FORM_PRIMARY_RADIUS_KEY,
+            help="Radius used for the primary source-station distance metric around each grid cell.",
         )
     with subject_primary_cols[1]:
         primary_min = st.number_input(
             "Minimum stations within primary distance",
             min_value=0,
             key=FORM_PRIMARY_MIN_KEY,
+            help="Minimum number of stations expected inside the primary radius.",
         )
     with subject_primary_cols[2]:
         primary_weight = st.number_input(
             "Weight primary source-station distance",
             key=FORM_PRIMARY_WEIGHT_KEY,
+            help="Contribution of the primary source-station distance metric to the composite index.",
         )
 
     subject_secondary_cols = st.columns(3)
@@ -935,17 +1063,20 @@ def _render_data_loading(session: WorkingSession) -> None:
         secondary_radius = st.number_input(
             "Secondary source-station distance radius (km)",
             key=FORM_SECONDARY_RADIUS_KEY,
+            help="Radius used for the secondary source-station distance metric around each grid cell.",
         )
     with subject_secondary_cols[1]:
         secondary_min = st.number_input(
             "Minimum stations within secondary distance",
             min_value=0,
             key=FORM_SECONDARY_MIN_KEY,
+            help="Minimum number of stations expected inside the secondary radius.",
         )
     with subject_secondary_cols[2]:
         secondary_weight = st.number_input(
             "Weight secondary source-station distance",
             key=FORM_SECONDARY_WEIGHT_KEY,
+            help="Contribution of the secondary source-station distance metric to the composite index.",
         )
 
     gap_cols = st.columns(3)
@@ -953,6 +1084,7 @@ def _render_data_loading(session: WorkingSession) -> None:
         gap_search = st.number_input(
             "Gap search radius (km)",
             key=FORM_GAP_SEARCH_KEY,
+            help="Stations within this radius are used to estimate azimuthal coverage.",
         )
     with gap_cols[1]:
         gap_target_angle = st.number_input(
@@ -961,20 +1093,27 @@ def _render_data_loading(session: WorkingSession) -> None:
             max_value=360.0,
             step=1.0,
             key=FORM_GAP_TARGET_KEY,
+            help="Reference gap angle used to score azimuthal coverage. Lower resulting gaps indicate better coverage.",
         )
     with gap_cols[2]:
         weight_gap = st.number_input(
             "Weight ΔGap",
             key=FORM_WEIGHT_GAP_KEY,
+            help="Contribution of the ΔGap metric to the composite index.",
         )
 
     context_cols = st.columns(4)
     with context_cols[0]:
-        context_label = st.text_input("Context layer name", key=FORM_CONTEXT_LABEL_KEY)
+        context_label = st.text_input(
+            "Context layer name",
+            key=FORM_CONTEXT_LABEL_KEY,
+            help="Display name used for the optional contextual layer in previews and maps.",
+        )
     with context_cols[1]:
         context_radius = st.number_input(
             "Context radius (km)",
             key=FORM_CONTEXT_RADIUS_KEY,
+            help="Search radius used to aggregate context-point values around each grid cell.",
         )
     with context_cols[2]:
         aggregation_options = ["sum", "average", "count", "min", "max"]
@@ -988,11 +1127,13 @@ def _render_data_loading(session: WorkingSession) -> None:
             aggregation_options,
             index=aggregation_index,
             key=FORM_CONTEXT_AGGREGATION_KEY,
+            help="How context-point values are combined within the context radius.",
         )
     with context_cols[3]:
         weight_context = st.number_input(
             "Weight context",
             key=FORM_WEIGHT_CONTEXT_KEY,
+            help="Contribution of the optional context grid to the composite index.",
         )
 
     final_cols = st.columns(2)
@@ -1000,25 +1141,47 @@ def _render_data_loading(session: WorkingSession) -> None:
         half_time = st.number_input(
             "Half-time (years)",
             key=FORM_HALF_TIME_KEY,
+            help="Recency-weighting half-time for event-based metrics. Older events contribute less over time.",
         )
-    with final_cols[1]:
-        overwrite = st.checkbox("Overwrite cached grids", key=FORM_OVERWRITE_KEY)
 
     balltree_cols = st.columns(2)
     with balltree_cols[0]:
-        balltree_enabled = st.checkbox("Apply BallTree data reduction", key=FORM_BALLTREE_ENABLED_KEY)
+        balltree_enabled = st.checkbox(
+            "Apply BallTree data reduction",
+            key=FORM_BALLTREE_ENABLED_KEY,
+            help="Reduce dense event catalogs before gridding by collapsing nearby events within the selected distance threshold.",
+        )
     with balltree_cols[1]:
         balltree_distance = st.number_input(
             "BallTree distance threshold (km)",
             min_value=0.1,
             step=0.1,
             key=FORM_BALLTREE_DISTANCE_KEY,
+            help="Maximum separation between events considered neighbors during BallTree reduction.",
         )
 
-    events_file = st.file_uploader("Events file", type=["csv"])
-    stations_file = st.file_uploader("Stations file", type=["csv"])
-    context_file = st.file_uploader("Context file (optional)", type=["csv"], key="context")
-    bna_files = st.file_uploader("BNA files (optional)", type=["bna"], accept_multiple_files=True)
+    events_file = st.file_uploader(
+        "Events file",
+        type=["csv"],
+        help="Upload the earthquake catalog used to compute the event-based grids.",
+    )
+    stations_file = st.file_uploader(
+        "Stations file",
+        type=["csv"],
+        help="Upload the station catalog used to measure source-station distance and azimuthal coverage.",
+    )
+    context_file = st.file_uploader(
+        "Context file (optional)",
+        type=["csv"],
+        key="context",
+        help="Optional point dataset with latitude, longitude, and a numeric value for the contextual layer.",
+    )
+    bna_files = st.file_uploader(
+        "BNA files (optional)",
+        type=["bna"],
+        accept_multiple_files=True,
+        help="Optional polygon overlays drawn on the static maps.",
+    )
 
     events_bytes = events_file.getvalue() if events_file is not None else None
     stations_bytes = stations_file.getvalue() if stations_file is not None else None
@@ -1040,6 +1203,7 @@ def _render_data_loading(session: WorkingSession) -> None:
                 session.events_columns,
                 _default_event_columns(),
                 "events_column",
+                field_help=EVENT_COLUMN_HELP,
             )
 
     if stations_bytes is not None:
@@ -1057,6 +1221,7 @@ def _render_data_loading(session: WorkingSession) -> None:
                 session.stations_columns,
                 _default_station_columns(),
                 "stations_column",
+                field_help=STATION_COLUMN_HELP,
             )
 
     if context_bytes is not None:
@@ -1075,6 +1240,7 @@ def _render_data_loading(session: WorkingSession) -> None:
                 session.context_columns,
                 _default_context_columns(),
                 "context_column",
+                field_help=CONTEXT_COLUMN_HELP,
             )
 
     inputs = {
@@ -1094,7 +1260,6 @@ def _render_data_loading(session: WorkingSession) -> None:
         "CONTEXT_AGGREGATION": context_aggregation,
         "WEIGHT_CONTEXT": weight_context,
         "HALF_TIME_YEARS": half_time,
-        "OVERWRITE": overwrite,
     }
     parameters = parameter_from_inputs(inputs, logger=st.warning)
     session.context_label = context_label.strip() or "Context layer"
@@ -1152,10 +1317,6 @@ def _render_data_loading(session: WorkingSession) -> None:
     if not params_changed:
         if getattr(previous_params, "context_aggregation", None) != getattr(parameters, "context_aggregation", None):
             params_changed = True
-    if not params_changed:
-        if getattr(previous_params, "overwrite", None) != getattr(parameters, "overwrite", None):
-            params_changed = True
-
     session.parameters = parameters
     if session.storage:
         session.storage.parameters = session.parameters
@@ -1198,6 +1359,12 @@ def _render_data_loading(session: WorkingSession) -> None:
             st.dataframe(new_session.context.head(10), width="stretch")
         _save_sources(new_session, new_session.events, new_session.stations, new_session.context)
         _save_bna_files(new_session)
+        _queue_session_feedback(
+            "success",
+            f"Session '{new_session.name}' saved.",
+            _session_feedback_details(new_session, "Saved"),
+        )
+        _render_session_feedback()
         if run_all:
             st.session_state[_run_key("subject")] = True
             st.session_state[_run_key("gap")] = True
@@ -1209,9 +1376,15 @@ def _render_data_loading(session: WorkingSession) -> None:
             _run_composite_grid(new_session)
 
     col1, col2 = st.columns(2)
-    if col1.button("Load data"):
+    if col1.button(
+        "Save session and load data",
+        help="Create or update the saved session on disk, parse the uploaded files, and preview the data without computing grids.",
+    ):
         process_inputs(False)
-    if col2.button("Load data and run all"):
+    if col2.button(
+        "Save session, load data, and run all",
+        help="Create or update the saved session on disk, parse the uploaded files, compute all available grids, and build the composite index in one step.",
+    ):
         process_inputs(True)
 
 
@@ -1222,14 +1395,23 @@ def _render_grid_section(session: WorkingSession) -> None:
         st.info("Load data to enable grid computations.")
         return
 
+    recompute_help = {
+        "subject": "Re-run the primary and secondary source-station distance grids using the current settings.",
+        "gap": "Re-run the ΔGap grid using the current settings.",
+        "context": "Re-run the contextual grid using the current context file, radius, and aggregation settings.",
+    }
+
     def run_with_stop(name: str, label: str, runner) -> None:
         trigger_key = _run_key(name)
-        if st.button(f"Re-compute {label}"):
+        if st.button(f"Re-compute {label}", help=recompute_help.get(name)):
             st.session_state[trigger_key] = True
         if st.session_state.get(trigger_key):
             stop_placeholder = st.empty()
             stop_placeholder.button(
-                "Stop", key=f"stop_btn_{name}", on_click=lambda: st.session_state.update({_stop_key(name): True})
+                "Stop",
+                key=f"stop_btn_{name}",
+                help="Request an orderly stop after the current computation step completes.",
+                on_click=lambda: st.session_state.update({_stop_key(name): True}),
             )
             runner(session)
             stop_placeholder.empty()
@@ -1239,7 +1421,10 @@ def _render_grid_section(session: WorkingSession) -> None:
     if session.has_context_input:
         run_with_stop("context", f"{session.context_label} grid", _run_context_grid)
 
-    if st.button("Re-compute composite index"):
+    if st.button(
+        "Re-compute composite index",
+        help="Rebuild the weighted composite index from the currently available grids.",
+    ):
         _run_composite_grid(session)
 
     merged = session.merged()
@@ -1277,7 +1462,13 @@ def _render_maps_section(session: WorkingSession) -> None:
                 f"{session.context_label} "
                 f"({session.parameters.context_aggregation} within {session.parameters.context_radius_km:g} km)"
             )
-        if st.checkbox(f"Show {label}", value=True, key=f"legacy_feature_{feature}"):
+        feature_help = f"Show or hide the {label} contour map preview."
+        if feature == "context_value":
+            feature_help = (
+                "Show or hide the contextual contour map built from the uploaded context layer "
+                "using the selected aggregation and radius."
+            )
+        if st.checkbox(f"Show {label}", value=True, key=f"legacy_feature_{feature}", help=feature_help):
             fig = render_legacy_contour(
                 legacy_df,
                 feature,
@@ -1296,6 +1487,7 @@ def _render_maps_section(session: WorkingSession) -> None:
                 file_name=f"{feature}.png",
                 mime="image/png",
                 key=f"legacy_png_{feature}",
+                help=f"Download the {label} contour map as a PNG image.",
             )
             if kmz_bytes:
                 download_cols[1].download_button(
@@ -1304,6 +1496,7 @@ def _render_maps_section(session: WorkingSession) -> None:
                     file_name=f"{feature}_overlay.kmz",
                     mime="application/vnd.google-earth.kmz",
                     key=f"legacy_kmz_{feature}",
+                    help=f"Download the {label} raster overlay for Google Earth.",
                 )
             else:
                 download_cols[1].caption("KMZ export unavailable")
@@ -1323,6 +1516,7 @@ def _render_maps_section(session: WorkingSession) -> None:
         value=default_k,
         step=1,
         key="priority_kmeans_cluster_count",
+        help="Number of K-means clusters used to group grid cells before ranking them into priority classes.",
     )
     n_init = init_col.slider(
         "K-means initializations",
@@ -1331,6 +1525,7 @@ def _render_maps_section(session: WorkingSession) -> None:
         value=20,
         step=5,
         key="priority_kmeans_n_init",
+        help="Number of K-means restarts. Higher values can improve cluster stability but take longer.",
     )
     normalized_weights = session.parameters.normalized_weights()
     clustering_feature_weights = {
@@ -1369,6 +1564,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=20,
             step=5,
             key="priority_scale_length",
+            help="Length of the map scale bar in kilometers.",
         )
         scale_bar_x = scale_col2.slider(
             "Scale X",
@@ -1377,6 +1573,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=0.22,
             step=0.01,
             key="priority_scale_x",
+            help="Horizontal placement of the scale bar as a fraction of the figure width.",
         )
         scale_bar_y = scale_col3.slider(
             "Scale Y",
@@ -1385,6 +1582,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=0.06,
             step=0.01,
             key="priority_scale_y",
+            help="Vertical placement of the scale bar as a fraction of the figure height.",
         )
 
         north_arrow_x = arrow_col1.slider(
@@ -1394,6 +1592,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=0.92,
             step=0.01,
             key="priority_arrow_x",
+            help="Horizontal placement of the north arrow as a fraction of the figure width.",
         )
         north_arrow_y = arrow_col2.slider(
             "Arrow Y",
@@ -1402,6 +1601,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=0.02,
             step=0.01,
             key="priority_arrow_y",
+            help="Vertical placement of the north arrow as a fraction of the figure height.",
         )
         north_arrow_length = arrow_col3.slider(
             "Arrow length",
@@ -1410,6 +1610,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             value=0.03,
             step=0.01,
             key="priority_arrow_length",
+            help="Length of the north arrow relative to the figure size.",
         )
 
     fig = render_priority_clusters(
@@ -1436,6 +1637,7 @@ def _render_maps_section(session: WorkingSession) -> None:
         file_name=f"priority_map_k{n_clusters}.png",
         mime="image/png",
         key="priority_png_download",
+        help="Download the priority clustering map as a PNG image.",
     )
     if priority_overlay:
         download_cols[1].download_button(
@@ -1444,6 +1646,7 @@ def _render_maps_section(session: WorkingSession) -> None:
             file_name=f"priority_map_k{n_clusters}_overlay.kmz",
             mime="application/vnd.google-earth.kmz",
             key="priority_overlay_download",
+            help="Download the priority clustering raster overlay for Google Earth.",
         )
     else:
         download_cols[1].caption("Overlay export unavailable")
@@ -1466,13 +1669,14 @@ def _render_maps_section(session: WorkingSession) -> None:
         data=csv_bytes,
         file_name=f"priority_labels_k{n_clusters}.csv",
         mime="text/csv",
+        help="Download the per-grid-cell priority labels as a CSV table.",
     )
 
 
 def main() -> None:
     st.set_page_config(page_title="SeisNetInsight", layout="wide")
     st.title("SeisNetInsight")
-    st.caption("Interactive seismic monitoring prioritization tools")
+    st.caption("Insights to support data-informed station siting")
     session = get_working_session()
     _render_data_loading(session)
     session = get_working_session()

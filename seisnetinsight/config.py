@@ -137,7 +137,8 @@ def parameter_from_inputs(inputs: Dict[str, object], logger: Optional[Callable[[
     params.context_aggregation = str(get("CONTEXT_AGGREGATION", params.context_aggregation)).strip().lower() or "sum"
     params.weight_context = float(get(("WEIGHT_CONTEXT", "WEIGHT_SWD"), params.weight_context))
     params.half_time_years = float(get("HALF_TIME_YEARS", params.half_time_years))
-    params.overwrite = bool(get("OVERWRITE", params.overwrite))
+    if "OVERWRITE" in inputs:
+        params.overwrite = bool(get("OVERWRITE", params.overwrite))
     return params
 
 
