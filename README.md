@@ -5,7 +5,7 @@ SeisNetInsight is an open-source Python tool for identifying high-impact regions
 ## What The App Does
 
 - Loads earthquake catalogs and station catalogs from CSV.
-- Accepts an optional contextual point layer with `latitude`, `longitude`, and `value`.
+- Accepts an optional contextual layer with `latitude`, `longitude`, and a `value`. A spatially referenced numeric variable indicating where denser monitoring is more relevant, such as SWD volume, fault proximity, GNSS deformation, geothermal indicators or activity, population density, and so on.
 - Supports context aggregation with `sum`, `average`, `count`, `min`, or `max`.
 - Supports optional BNA overlays and optional BallTree event reduction.
 - Computes primary and secondary source-station distance, ΔGap, context, and composite-priority grids.
