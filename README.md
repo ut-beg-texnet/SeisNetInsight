@@ -1,6 +1,6 @@
 # SeisNetInsight
 
-SeisNetInsight is an open-source Python tool for identifying where additional seismic stations could provide the greatest monitoring benefit. It combines source-station proximity, azimuthal-gap coverage, and an optional generic contextual  layer into insightful contour maps and a priority map that can be reviewed in the app or exported as figures and KMZ overlays.
+SeisNetInsight is an open-source Python tool for identifying high-impact regions for seismic station deployment. It combines source-station proximity, azimuthal-gap coverage, and an optional generic contextual  layer into insightful contour maps and a priority map that can be reviewed in the app or exported as figures and KMZ overlays.
 
 ## What The App Does
 
