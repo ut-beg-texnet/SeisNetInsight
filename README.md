@@ -84,41 +84,7 @@ Column names can be mapped in the UI, and the loaders also recognize common alia
 
 ## Programmatic Usage
 
-### Example: bundled sample workflow without context
-
-```python
-from pathlib import Path
-
-from seisnetinsight import (
-    GridParameters,
-    compute_composite_index,
-    compute_gap_grid,
-    compute_subject_grids,
-    generate_grid,
-    load_events,
-    load_stations,
-    merge_grids,
-)
-
-root = Path("sample_files")
-params = GridParameters()
-
-events, events_missing = load_events(root / "events_sample.csv", warn=False)
-stations, stations_missing = load_stations(root / "texnet_stations_2025.csv", warn=False)
-
-if events_missing or stations_missing:
-    raise RuntimeError((events_missing, stations_missing))
-
-grid = generate_grid(params)
-subject = compute_subject_grids(events, stations, grid, params)
-gap = compute_gap_grid(events, stations, grid, params)
-merged = merge_grids(subject, gap)
-composite = compute_composite_index(merged, params)
-
-print(composite[["latitude", "longitude", "composite_index"]].head())
-```
-
-### Example: bundled sample workflow with a generic context layer
+### Example: Sample workflow with a context layer
 
 ```python
 from pathlib import Path
