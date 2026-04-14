@@ -61,7 +61,7 @@ The end-to-end workflow is summarized here:
 
 ## Input Data
 
-Event and station inputs can be provided either as CSV files with the columns described below.
+Event and station inputs can be provided as CSV files with the columns described below.
 
 ### Required event columns
 
