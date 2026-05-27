@@ -8,6 +8,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from cartopy.mpl.ticker import LatitudeFormatter, LongitudeFormatter
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -17,13 +18,6 @@ from pyproj import Geod
 
 from .config import GridParameters
 from .maps import PRIORITY_COLORS, PRIORITY_LEVELS
-
-REFERENCE_CITIES: Tuple[Tuple[str, float, float], ...] = (
-    ("Midland, TX", -102.077408, 32.000507),
-    ("Odessa, TX", -102.367645, 31.845682),
-    ("Lubbock, TX", -101.855166, 33.577863),
-    ("Big Spring, TX", -101.479073, 32.250286),
-)
 
 
 @dataclass
@@ -86,20 +80,20 @@ def _parse_bna_lines(bna_bytes: bytes) -> List[np.ndarray]:
     return polygons
 
 
+def _add_coordinate_ticks(ax: plt.Axes, params: GridParameters) -> None:
+    """Add compact longitude/latitude ticks for publication map panels."""
+    lon_min, lon_max = params.lons
+    lat_min, lat_max = params.lats
+    lon_ticks = np.arange(np.ceil(lon_min), np.floor(lon_max) + 0.1, 1.0)
+    lat_ticks = np.arange(np.ceil(lat_min * 2.0) / 2.0, np.floor(lat_max * 2.0) / 2.0 + 0.1, 0.5)
+    ax.set_xticks(lon_ticks, crs=ccrs.PlateCarree())
+    ax.set_yticks(lat_ticks, crs=ccrs.PlateCarree())
+    ax.xaxis.set_major_formatter(LongitudeFormatter(number_format=".0f", degree_symbol="°"))
+    ax.yaxis.set_major_formatter(LatitudeFormatter(number_format=".1f", degree_symbol="°"))
+    ax.tick_params(axis="both", labelsize=7, pad=2)
+
+
 GEOD = Geod(ellps="WGS84")
-
-
-def _cities_within_aoi(
-    params: GridParameters,
-    cities: Sequence[Tuple[str, float, float]] = REFERENCE_CITIES,
-) -> List[Tuple[str, float, float]]:
-    lon_min, lon_max = sorted(params.lons)
-    lat_min, lat_max = sorted(params.lats)
-    visible: List[Tuple[str, float, float]] = []
-    for name, lon, lat in cities:
-        if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
-            visible.append((name, lon, lat))
-    return visible
 
 
 def _add_scale_bar(
@@ -182,6 +176,8 @@ def render_legacy_contour(
     title: Optional[str] = None,
     colorbar_labelpad: Optional[float] = None,
     colorbar_label: Optional[str] = None,
+    colorbar_pad: Optional[float] = None,
+    coordinate_ticks: bool = False,
 ) -> plt.Figure:
     """Create a contour map figure that mirrors the legacy scripted output."""
     if value_col not in df.columns:
@@ -209,11 +205,20 @@ def render_legacy_contour(
     ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=2)
 
     if config.show_cities:
-        for name, lon, lat in _cities_within_aoi(params):
+        cities = [
+            ("Midland, TX", -102.077408, 32.000507),
+            ("Odessa, TX", -102.367645, 31.845682),
+            ("Lubbock, TX", -101.855166, 33.577863),
+            ("Big Spring, TX", -101.479073, 32.250286),
+        ]
+        for name, lon, lat in cities:
             ax.text(lon, lat, name, fontsize=5, ha="right", color="gray", transform=ccrs.PlateCarree(), zorder=3)
 
     cs = ax.contourf(lons, lats, Z, levels=levels, cmap=cmap, transform=ccrs.PlateCarree(), alpha=0.9)
-    cb = plt.colorbar(cs, ax=ax)
+    colorbar_kwargs = {}
+    if colorbar_pad is not None:
+        colorbar_kwargs["pad"] = colorbar_pad
+    cb = plt.colorbar(cs, ax=ax, **colorbar_kwargs)
     label_text = value_col.replace("_", " ") if colorbar_label is None else colorbar_label
     if colorbar_labelpad is None:
         cb.set_label(label_text)
@@ -224,10 +229,11 @@ def render_legacy_contour(
         for poly in _parse_bna_lines(bna_bytes):
             ax.plot(poly[:, 0], poly[:, 1], color="black", linewidth=1.0, transform=ccrs.PlateCarree(), label=config.bna_label)
 
+    if coordinate_ticks:
+        _add_coordinate_ticks(ax, params)
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    if title:
-        ax.set_title(title, fontsize=10)
+    ax.set_title(value_col if title is None else title, fontsize=10)
 
     return fig
 
@@ -313,7 +319,13 @@ def render_priority_clusters(
     ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=5)
 
     if config.show_cities:
-        for name, lon, lat in _cities_within_aoi(params):
+        cities = [
+            ("Midland, TX", -102.077408, 32.000507),
+            ("Odessa, TX", -102.367645, 31.845682),
+            ("Lubbock, TX", -101.855166, 33.577863),
+            ("Big Spring, TX", -101.479073, 32.250286),
+        ]
+        for name, lon, lat in cities:
             ax.text(lon, lat, name, fontsize=5, ha="right", color="gray", transform=ccrs.PlateCarree(), zorder=5)
 
     if stations is not None and not stations.empty:
