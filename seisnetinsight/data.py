@@ -91,7 +91,7 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename_map)
 
 
-def _apply_column_mapping(df: pd.DataFrame, column_map: Optional[Dict[str, str]]) -> pd.DataFrame:
+def _apply_column_mapping(df: pd.DataFrame, column_map: Optional[Dict[str, str]], *, strict: bool = False) -> pd.DataFrame:
     if not column_map:
         return df
     rename_map: Dict[str, str] = {}
@@ -106,6 +106,8 @@ def _apply_column_mapping(df: pd.DataFrame, column_map: Optional[Dict[str, str]]
         candidate = lower_lookup.get(actual.lower())
         if candidate:
             rename_map[candidate] = canonical
+        elif strict:
+            raise ValueError(f"Mapped column {actual!r} for {canonical!r} is missing.")
     if rename_map:
         df = df.rename(columns=rename_map)
     return df
@@ -116,27 +118,44 @@ def validate_required_columns(df: pd.DataFrame, required: Iterable[str]) -> List
     return missing
 
 
+def _load_mapped(source, column_map, strict: bool) -> pd.DataFrame:
+    frame = _standardize_columns(_apply_column_mapping(_read_dataframe(source), column_map, strict=strict))
+    if strict and frame.columns.has_duplicates:
+        duplicate = frame.columns[frame.columns.duplicated()][0]
+        raise ValueError(f"More than one input column maps to {duplicate!r}.")
+    return frame
+
+
+def _parse_event_times(values: pd.Series, utc: bool) -> pd.Series:
+    parsed = pd.to_datetime(values, errors="coerce", utc=utc)
+    if utc and parsed.isna().any():
+        # Pandas 2+ can infer one format for a column with mixed ISO timestamps.
+        missing = parsed.isna()
+        parsed.loc[missing] = values.loc[missing].map(lambda value: pd.to_datetime(value, errors="coerce", utc=True))
+    return parsed
+
+
 def load_events(
     source,
     *,
     column_map: Optional[Dict[str, str]] = None,
     warn: bool = True,
+    strict_mapping: bool = False,
+    utc: bool = False,
 ) -> Tuple[pd.DataFrame, List[str]]:
-    df = _read_dataframe(source)
-    df = _apply_column_mapping(df, column_map)
-    df = _standardize_columns(df)
+    df = _load_mapped(source, column_map, strict_mapping)
     missing = validate_required_columns(df, EXPECTED_EVENT_COLUMNS)
     if "origin_time" in df.columns:
         origin_time = df["origin_time"].astype(str).str.strip()
         if "Origin Time" in df.columns:
             origin_clock = df["Origin Time"].astype(str).str.strip()
-            combined = pd.to_datetime(origin_time + " " + origin_clock, errors="coerce")
+            combined = _parse_event_times(origin_time + " " + origin_clock, utc)
             if combined.notna().any():
                 df["origin_time"] = combined
             else:
-                df["origin_time"] = pd.to_datetime(df["origin_time"], errors="coerce")
+                df["origin_time"] = _parse_event_times(df["origin_time"], utc)
         else:
-            df["origin_time"] = pd.to_datetime(df["origin_time"], errors="coerce")
+            df["origin_time"] = _parse_event_times(df["origin_time"], utc)
     if warn and missing:
         for column in missing:
             pd.Series(dtype="object")  # touch pandas to avoid lint
@@ -148,10 +167,9 @@ def load_stations(
     *,
     column_map: Optional[Dict[str, str]] = None,
     warn: bool = True,
+    strict_mapping: bool = False,
 ) -> Tuple[pd.DataFrame, List[str]]:
-    df = _read_dataframe(source)
-    df = _apply_column_mapping(df, column_map)
-    df = _standardize_columns(df)
+    df = _load_mapped(source, column_map, strict_mapping)
     missing = validate_required_columns(df, EXPECTED_STATION_COLUMNS)
     if warn and missing:
         for column in missing:
@@ -164,10 +182,9 @@ def load_context_points(
     *,
     column_map: Optional[Dict[str, str]] = None,
     warn: bool = True,
+    strict_mapping: bool = False,
 ) -> Tuple[pd.DataFrame, List[str]]:
-    df = _read_dataframe(source)
-    df = _apply_column_mapping(df, column_map)
-    df = _standardize_columns(df)
+    df = _load_mapped(source, column_map, strict_mapping)
     if "volume" in df.columns and "value" not in df.columns:
         df = df.rename(columns={"volume": "value"})
     missing = validate_required_columns(df, EXPECTED_CONTEXT_COLUMNS)

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "inputs": {
+    "events": {
+      "path": "events_sample.csv",
+      "columns": {"latitude": "Latitude (WGS84)", "longitude": "Longitude (WGS84)", "origin_time": "Origin Date"}
+    },
+    "stations": {
+      "path": "texnet_stations_2025.csv",
+      "columns": {"latitude": "Latitude (WGS84)", "longitude": "Longitude (WGS84)"}
+    },
+    "context": {
+      "path": "swd_wells_sample.csv",
+      "columns": {"latitude": "latitude_wgs84", "longitude": "longitude_wgs84", "value": "SUM_injected_liquid_BBL"},
+      "units": "bbl"
+    },
+    "boundary": "midland.bna"
+  },
+  "grid": {"lats": [30.5, 34.0], "lons": [-103.0, -100.5], "grid_step": 0.5},
+  "maps": {"basemap": false, "dpi": 100}
+}

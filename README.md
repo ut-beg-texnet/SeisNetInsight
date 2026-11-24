@@ -98,6 +98,40 @@ Column names can be mapped in the UI, and the loaders also recognize common alia
 
 ## Programmatic Usage
 
+### Headless command line
+
+From a checkout installed with `python -m pip install .`, run the bundled sample:
+
+```sh
+seisnetinsight validate --config sample_files/analysis.json --json
+seisnetinsight run --config sample_files/analysis.json --output-dir sample-run --json
+seisnetinsight render --manifest sample-run/manifest.json --output-dir sample-redraw --json
+```
+
+`python -m seisnetinsight` is equivalent to the `seisnetinsight` executable. The sample uses a coarse grid and runs headless without downloading basemap data. Both output directories must be new. `render` uses the saved grids, station coordinates, and optional boundary from the analysis directory. It checks their hashes before rendering and can run after the original input files have moved.
+
+With `--json`, stdout contains one JSON object. Successful responses contain `schema_version`, `ok: true`, and `command`. Validation returns resolved `config`, input `source`, row `counts`, `normalized_weights`, and `warnings`. Run and render return the absolute `manifest` path, an `artifacts` mapping from artifact name to absolute path, `counts`, and `warnings`. Errors return `ok: false` and `error` with a `code` and `message`. Read progress and library diagnostics from stderr. Exit statuses are 0 for success, 2 for usage, configuration, input, manifest, or existing-output errors, 1 for execution failures, and 130 for interruption.
+
+The analysis directory contains the feature and composite grid CSV, priority grid CSV, and each map as a PNG. The analysis manifest records the resolved configuration, input paths and SHA-256 hashes, filter counts, recency reference times, effective weights, package and dependency versions, a source fingerprint, and SHA-256 hashes of outputs. Artifact paths **inside the manifest** are relative to its directory. A render manifest also identifies the source analysis manifest and its hash.
+
+#### Analysis configuration, version 1
+
+Copy [the sample config](sample_files/analysis.json) to start a new analysis. Required top-level fields are `schema_version: 1` and `inputs`. Paths are relative to the config file unless absolute.
+
+| Config field | Supported settings |
+| --- | --- |
+| `inputs.events`, `inputs.stations` | Each requires `path`. An optional `columns` object maps canonical names to input headers. Use `latitude`, `longitude`, and, for events, `origin_time`. Coordinates are WGS84 decimal degrees. |
+| `inputs.context` | Optional local point table with `path`, optional `columns` for `latitude`, `longitude`, and `value`, and optional `units` for provenance. Context values are aggregated as supplied. Map the already weighted column if the source contains precomputed weights. |
+| `inputs.boundary` | Optional path to a BNA file. |
+| `event_window` | Optional `start_inclusive` and `end_exclusive` as ISO dates or timestamps. Dates and timestamps without an offset are interpreted as UTC. The CLI uses the event catalog and station snapshot you supply. Apply any project-specific catalog quality or station activity filters before passing the files in. |
+| `balltree` | Optional event reduction after the date filter. Set positive `distance_km` and `keep` to `most_recent` (default) or `first` (input order). |
+| `grid` | `lats` and `lons` are increasing pairs. `grid_step` is in degrees. Other accepted keys are `subject_primary_radius_km`, `subject_primary_min_stations`, `subject_primary_weight`, `subject_secondary_radius_km`, `subject_secondary_min_stations`, `subject_secondary_weight`, `gap_search_km`, `gap_target_angle_deg`, `weight_gap`, `context_radius_km`, `weight_context`, `half_time_years`, and `context_aggregation` (`sum`, `average`, `count`, `min`, or `max`). Omitted settings use library defaults. Without context, the effective context weight is zero and the context PNG is omitted. |
+| `max_grid_cells` | Limits the grid size before computation. Default 1,000,000. |
+| `priority` | `n_clusters` (4), `random_state` (42), `n_init` (20), and `apply_feature_weights` (true). |
+| `maps` | `dpi` (150) and `basemap` (false). Enable the basemap for Natural Earth layers. Cartopy may download map data on first use. |
+
+The core gap calculation uses events inside the configured bounds and excludes AM stations when a network column is present. Coverage can use events and stations outside the bounds. The manifest records the corresponding inputs and counts.
+
 ### Example: Sample workflow with a context layer
 
 ```python

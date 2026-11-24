@@ -10,6 +10,7 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: python -m pip install '.[test]'
+      - run: seisnetinsight validate --config sample_files/analysis.json --json
       - run: python -m pytest -q
         env:
           MPLBACKEND: Agg

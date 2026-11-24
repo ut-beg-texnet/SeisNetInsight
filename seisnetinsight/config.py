@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-import streamlit as st
-
 
 @dataclass
 class GridParameters:
@@ -91,6 +89,8 @@ def warn_missing_parameter(name: str, default_value: object, logger: Optional[Ca
     if logger is not None:
         logger(message)
     else:
+        import streamlit as st
+
         st.warning(message)
 
 
