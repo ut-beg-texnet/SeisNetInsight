@@ -1,5 +1,19 @@
 # SeisNetInsight
 
+## Published paper
+
+Siervo, D., Breton, C., Huang, G.-c. D., and Savvaidis, A. (2026).
+[Data-Driven, Automated Mapping of High-Impact Regions for Seismic Station Deployment](https://doi.org/10.1785/0120250291).
+*Bulletin of the Seismological Society of America*. DOI: **10.1785/0120250291**.
+
+## Map colors and event ordering
+
+Feature and composite maps use `cmcrameri.batlowW_r`: low values are light and high values are dark, matching the published paper. PNG maps and KMZ overlays use the same palette. Categorical priority colors are unchanged.
+
+When enabling BallTree reduction, select **Most recent events first** (the default for new app sessions) or **Input file order**. The selected ordering and radius are saved with the session. Existing sessions without ordering metadata retain input-order behavior. Programmatic callers can pass `keep="most_recent"` explicitly; the helper's legacy default remains `first`.
+
+For weighted clustering, use `context_value` as the contextual feature weight key. Legacy `swd_volume_25km_bbl` keys are supported as aliases; conflicting aliases or unknown weight keys raise an error rather than silently changing the weighting.
+
 SeisNetInsight is an open-source Python tool for identifying high-impact regions for seismic station deployment. It combines source-station proximity, azimuthal-gap coverage, and an optional generic contextual  layer into insightful contour maps and a priority map that can be reviewed in the app or exported as figures and KMZ overlays.
 
 ## What The App Does
@@ -135,12 +149,8 @@ composite = compute_composite_index(merged, params)
 print(composite[["latitude", "longitude", "context_value", "composite_index"]].head())
 ```
 
-## Output Examples
+## Output Maps
 
-Panels (a-c) show how adding a new station would affect nearby events. Brighter colors mean that placing a station in that grid cell would impact more recent events. (a) shows how many recency-weighted events would fall within 4 km of a station. (b) shows the same for a 10 km radius. (c) shows how many events would have their maximum azimuthal gap reduced to <=90 deg if a station were placed there. (d) shows the total salt-water-disposal volume within 25 km (in barrels). The black outline marks the Midland Basin:
+Feature and composite maps use a light-to-dark `batlowW_r` palette: darker cells have higher values. The composite combines normalized features with the selected weights. The categorical priority map uses four colors to identify clusters ranked by their mean composite score; blue triangles represent stations.
 
-<img width="520" height="500" alt="output example panels" src="https://github.com/user-attachments/assets/3f67335f-5525-4fbe-b931-56f7d7fa2c0d" />
-
-(a) Map of a composite impact index (ranging from 0 to 1) that combines four metrics-S4, S10, ΔGap <= 90 deg, and SWD after adjusting for scaling, and weighting. Brighter colors highlight areas where a new station would have the most combined benefit. (b) Priority areas determined by k-means clustering of these metrics, ranked by their average composite index (Very High, High, Medium, Low). Blue triangles show current stations; the black outline marks the Midland Basin.
-
-<img width="900" height="521" alt="composite and priority example" src="https://github.com/user-attachments/assets/53a6fec4-0de5-4c7e-8e01-c358656033da" />
+The sample notebook demonstrates the generic API, with its own illustrative parameters. Input files, parameter values and implementation hashes are included in its cache keys so changes trigger recomputation. Its settings are not a paper preset.

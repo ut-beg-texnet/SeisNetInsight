@@ -174,6 +174,7 @@ class WorkingSession:
     column_warnings: Dict[str, List[str]] = field(default_factory=dict)
     balltree_enabled: bool = False
     balltree_distance: float = 1.0
+    balltree_keep: str = "most_recent"
     storage: Optional[SessionState] = None
     bna_files: Dict[str, bytes] = field(default_factory=dict)
     events_columns: Dict[str, str] = field(default_factory=_default_event_columns)
@@ -251,6 +252,7 @@ FORM_WEIGHT_CONTEXT_KEY = "form_weight_context"
 FORM_HALF_TIME_KEY = "form_half_time"
 FORM_BALLTREE_ENABLED_KEY = "form_balltree_enabled"
 FORM_BALLTREE_DISTANCE_KEY = "form_balltree_distance"
+FORM_BALLTREE_KEEP_KEY = "form_balltree_keep"
 
 EVENT_COLUMN_HELP = {
     "latitude": "Column containing event latitude in decimal degrees.",
@@ -292,6 +294,7 @@ def _session_form_defaults(session: WorkingSession) -> Dict[str, object]:
         FORM_HALF_TIME_KEY: float(session.parameters.half_time_years),
         FORM_BALLTREE_ENABLED_KEY: bool(session.balltree_enabled),
         FORM_BALLTREE_DISTANCE_KEY: float(session.balltree_distance),
+        FORM_BALLTREE_KEEP_KEY: session.balltree_keep,
     }
 
 
@@ -594,7 +597,7 @@ def _legacy_overlay_kmz(df: pd.DataFrame, feature: str, params: GridParameters) 
             levels = np.linspace(0.0, 1.0, 12)
         else:
             levels = np.linspace(zmin, zmax, 12)
-    cmap = cmc.batlow
+    cmap = cmc.batlowW_r
     norm = mpl.colors.Normalize(vmin=float(levels[0]), vmax=float(levels[-1]))
     rgba = cmap(norm(values))
     rgba[..., 3] = np.where(valid, OVERLAY_ALPHA, 0.0)
@@ -714,6 +717,9 @@ def _load_session_from_disk(name: str) -> WorkingSession:
         stations_columns=stations_cols,
         context_columns=context_cols,
         context_label=state.context_label,
+        balltree_enabled=state.data_options.get("balltree_enabled", False),
+        balltree_distance=state.data_options.get("balltree_distance", 1.0),
+        balltree_keep=state.data_options.get("balltree_keep", "first"),
     )
     for path in state.list_bna():
         try:
@@ -761,6 +767,11 @@ def _save_sources(
     session.storage.column_mapping["stations"] = dict(session.stations_columns)
     session.storage.column_mapping["context"] = dict(session.context_columns)
     session.storage.context_label = session.context_label
+    session.storage.data_options = {
+        "balltree_enabled": session.balltree_enabled,
+        "balltree_distance": session.balltree_distance,
+        "balltree_keep": session.balltree_keep,
+    }
     session.storage.save_source(events, "events")
     session.storage.save_source(stations, "stations")
     if context is not None:
@@ -794,6 +805,7 @@ def build_working_session(
     context_label: str = "Context layer",
     balltree_enabled: bool = False,
     balltree_distance: float = 1.0,
+    balltree_keep: str = "most_recent",
 ) -> WorkingSession:
     if events_bytes is None or stations_bytes is None:
         raise ValueError("Events and stations files are required.")
@@ -818,7 +830,7 @@ def build_working_session(
         context_label: context_missing,
     }
     if balltree_enabled:
-        events_df = balltree_reduce_events(events_df, distance_threshold_km=balltree_distance)
+        events_df = balltree_reduce_events(events_df, distance_threshold_km=balltree_distance, keep=balltree_keep)
 
     session = WorkingSession(
         name=session_name,
@@ -828,6 +840,7 @@ def build_working_session(
         context=context_df,
         balltree_enabled=balltree_enabled,
         balltree_distance=balltree_distance,
+        balltree_keep=balltree_keep,
         column_warnings=warnings,
         events_columns=dict(resolved_events_columns),
         stations_columns=dict(resolved_stations_columns),
@@ -1160,6 +1173,14 @@ def _render_data_loading(session: WorkingSession) -> None:
             help="Maximum separation between events considered neighbors during BallTree reduction.",
         )
 
+    balltree_keep = st.selectbox(
+        "BallTree event ordering",
+        options=["most_recent", "first"],
+        key=FORM_BALLTREE_KEEP_KEY,
+        format_func=lambda value: "Most recent events first" if value == "most_recent" else "Input file order",
+        help="Most recent keeps newer events in dense areas. Input file order preserves the uploaded row order.",
+    )
+
     events_file = st.file_uploader(
         "Events file",
         type=["csv"],
@@ -1344,6 +1365,7 @@ def _render_data_loading(session: WorkingSession) -> None:
                 context_label=session.context_label,
                 balltree_enabled=balltree_enabled,
                 balltree_distance=balltree_distance,
+                balltree_keep=balltree_keep,
             )
         except ValueError as exc:
             st.error(str(exc))

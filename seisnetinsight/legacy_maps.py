@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import cartopy.io.shapereader as shpreader
+from shapely.geometry import box
 from cartopy.mpl.ticker import LatitudeFormatter, LongitudeFormatter
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -27,6 +30,11 @@ class LegacyMapConfig:
     show_roads: bool = True
     show_states: bool = True
     show_cities: bool = True
+    show_counties: bool = False
+    show_county_names: bool = False
+    county_label_color: str = "#4a4a4a"
+    county_label_alpha: float = 0.86
+    county_label_color_overrides: Optional[dict[str, str]] = None
     bna_label: Optional[str] = "Area of interest"
 
 
@@ -94,6 +102,74 @@ def _add_coordinate_ticks(ax: plt.Axes, params: GridParameters) -> None:
 
 
 GEOD = Geod(ellps="WGS84")
+
+
+@lru_cache(maxsize=1)
+def _us_county_records() -> Tuple[Tuple[str, object], ...]:
+    path = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_2_counties")
+    records = []
+    for record in shpreader.Reader(path).records():
+        attrs = record.attributes
+        if attrs.get("ADM0_A3") != "USA":
+            continue
+        name = str(attrs.get("NAME") or "").strip()
+        if not name:
+            continue
+        records.append((name, record.geometry))
+    return tuple(records)
+
+
+def _add_county_boundaries_and_labels(
+    ax: plt.Axes,
+    params: GridParameters,
+    config: LegacyMapConfig,
+    *,
+    boundary_zorder: int = 6,
+    label_zorder: int = 7,
+) -> None:
+    if not config.show_counties and not config.show_county_names:
+        return
+
+    lon_min, lon_max = params.lons
+    lat_min, lat_max = params.lats
+    visible_box = box(lon_min, lat_min, lon_max, lat_max)
+    for name, geometry in _us_county_records():
+        minx, miny, maxx, maxy = geometry.bounds
+        if maxx < lon_min or minx > lon_max or maxy < lat_min or miny > lat_max:
+            continue
+        clipped = geometry.intersection(visible_box)
+        if clipped.is_empty:
+            continue
+        if config.show_counties:
+            ax.add_geometries(
+                [clipped],
+                ccrs.PlateCarree(),
+                facecolor="none",
+                edgecolor="#8a8a8a",
+                linewidth=0.25,
+                alpha=0.62,
+                zorder=boundary_zorder,
+            )
+        if config.show_county_names:
+            label_point = clipped.representative_point()
+            label_color = (
+                config.county_label_color_overrides.get(name, config.county_label_color)
+                if config.county_label_color_overrides
+                else config.county_label_color
+            )
+            ax.text(
+                label_point.x,
+                label_point.y,
+                name,
+                ha="center",
+                va="center",
+                fontsize=4.0,
+                color=label_color,
+                alpha=config.county_label_alpha,
+                transform=ccrs.PlateCarree(),
+                zorder=label_zorder,
+                # path_effects=[patheffects.withStroke(linewidth=1.0, foreground="#f3f3f3")],
+            )
 
 
 def _add_scale_bar(
@@ -169,7 +245,7 @@ def render_legacy_contour(
     value_col: str,
     params: GridParameters,
     *,
-    cmap=cmc.batlow,
+    cmap=cmc.batlowW_r,
     config: Optional[LegacyMapConfig] = None,
     levels: Optional[Sequence[float]] = None,
     bna_bytes: Optional[bytes] = None,
@@ -229,6 +305,8 @@ def render_legacy_contour(
         for poly in _parse_bna_lines(bna_bytes):
             ax.plot(poly[:, 0], poly[:, 1], color="black", linewidth=1.0, transform=ccrs.PlateCarree(), label=config.bna_label)
 
+    _add_county_boundaries_and_labels(ax, params, config, boundary_zorder=5, label_zorder=6)
+
     if coordinate_ticks:
         _add_coordinate_ticks(ax, params)
     ax.set_xlabel("Longitude")
@@ -260,6 +338,7 @@ def render_priority_clusters(
     scale_bar_location: Tuple[float, float] = (0.22, 0.06),
     north_arrow_location: Tuple[float, float] = (0.92, 0.02),
     north_arrow_length: float = 0.03,
+    coordinate_ticks: bool = False,
 ) -> plt.Figure:
     """Render a K-means based priority classification map."""
     if priority_column not in df.columns:
@@ -350,6 +429,10 @@ def render_priority_clusters(
                 transform=ccrs.PlateCarree(),
                 zorder=6,
             )
+
+    _add_county_boundaries_and_labels(ax, params, config)
+    if coordinate_ticks:
+        _add_coordinate_ticks(ax, params)
 
     if handles:
         legend = ax.legend(handles=handles, loc="lower left", fontsize=8, framealpha=0.7)

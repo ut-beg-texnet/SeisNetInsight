@@ -69,6 +69,18 @@ def classify_priority_clusters(
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(feature_frame.to_numpy(dtype=float))
     if apply_feature_weights and feature_weights:
+        feature_weights = dict(feature_weights)
+        current, legacy = "context_value", "swd_volume_25km_bbl"
+        if current in feature_weights and legacy in feature_weights:
+            if float(feature_weights[current]) != float(feature_weights[legacy]):
+                raise ValueError("Conflicting context_value and swd_volume_25km_bbl weights")
+        elif legacy in feature_weights:
+            feature_weights[current] = feature_weights[legacy]
+        elif current in feature_weights:
+            feature_weights[legacy] = feature_weights[current]
+        unknown = set(feature_weights) - set(feature_names) - {current, legacy}
+        if unknown:
+            raise ValueError(f"Unknown feature weight keys: {', '.join(sorted(unknown))}")
         weight_vector = np.array(
             [max(float(feature_weights.get(name, 1.0)), 0.0) for name in feature_names],
             dtype=float,

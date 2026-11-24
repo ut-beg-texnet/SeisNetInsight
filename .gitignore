@@ -5,6 +5,5 @@ __pycache__/
 .streamlit/
 .cache/
 build/
-tests/
 *.parquet
 TEST.md

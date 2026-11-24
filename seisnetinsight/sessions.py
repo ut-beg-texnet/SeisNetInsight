@@ -32,6 +32,7 @@ class SessionState:
     grids: Dict[str, str] = field(default_factory=dict)
     column_mapping: Dict[str, Dict[str, str]] = field(default_factory=dict)
     context_label: str = "Context layer"
+    data_options: Dict[str, object] = field(default_factory=dict)
 
     def directory(self) -> Path:
         return SESSION_ROOT / self.name
@@ -45,6 +46,7 @@ class SessionState:
             "grids": self.grids,
             "column_mapping": self.column_mapping,
             "context_label": self.context_label,
+            "data_options": self.data_options,
         }
         (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
@@ -114,6 +116,7 @@ class SessionState:
             grids=metadata.get("grids", {}),
             column_mapping=metadata.get("column_mapping", {}),
             context_label=metadata.get("context_label", "Context layer"),
+            data_options=metadata.get("data_options", {}),
         )
 
     def save_dataframe(self, df: pd.DataFrame, key: str) -> None:
