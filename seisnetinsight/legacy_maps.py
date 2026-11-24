@@ -36,6 +36,7 @@ class LegacyMapConfig:
     county_label_alpha: float = 0.86
     county_label_color_overrides: Optional[dict[str, str]] = None
     bna_label: Optional[str] = "Area of interest"
+    show_basemap: bool = True
 
 
 def _auto_levels(values: np.ndarray, *, n: int = 12, force_min: Optional[float] = None, force_max: Optional[float] = None) -> np.ndarray:
@@ -272,13 +273,15 @@ def render_legacy_contour(
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     ax.set_extent([params.lons[0], params.lons[1], params.lats[0], params.lats[1]], crs=ccrs.PlateCarree())
 
-    ax.add_feature(cfeature.LAND, color="lightgrey", zorder=0)
+    if config.show_basemap:
+        ax.add_feature(cfeature.LAND, color="lightgrey", zorder=0)
     if config.show_roads:
         roads_feat = cfeature.NaturalEarthFeature("cultural", "roads", "10m", linewidth=0.4, facecolor="none")
         ax.add_feature(roads_feat, edgecolor="gray", zorder=1)
     if config.show_states:
         ax.add_feature(cfeature.STATES, linestyle=":", zorder=2)
-    ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=2)
+    if config.show_basemap:
+        ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=2)
 
     if config.show_cities:
         cities = [
@@ -387,15 +390,17 @@ def render_priority_clusters(
         )
         handles.append(patches.Patch(facecolor=color, edgecolor="none", alpha=0.7, label=label))
 
-    ax.add_feature(cfeature.OCEAN, color="#a9cce3", zorder=5)
-    ax.add_feature(cfeature.LAKES, edgecolor="#a9cce3", facecolor="#a9cce3", linewidth=0.5, zorder=5)
-    ax.add_feature(cfeature.RIVERS, edgecolor="#a9cce3", linewidth=0.5, zorder=5)
+    if config.show_basemap:
+        ax.add_feature(cfeature.OCEAN, color="#a9cce3", zorder=5)
+        ax.add_feature(cfeature.LAKES, edgecolor="#a9cce3", facecolor="#a9cce3", linewidth=0.5, zorder=5)
+        ax.add_feature(cfeature.RIVERS, edgecolor="#a9cce3", linewidth=0.5, zorder=5)
     if config.show_roads:
         roads_feat = cfeature.NaturalEarthFeature("cultural", "roads", "10m", linewidth=0.4, facecolor="none")
         ax.add_feature(roads_feat, edgecolor="gray", zorder=5)
     if config.show_states:
         ax.add_feature(cfeature.STATES, linestyle=":", zorder=5)
-    ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=5)
+    if config.show_basemap:
+        ax.add_feature(cfeature.BORDERS, linestyle=":", zorder=5)
 
     if config.show_cities:
         cities = [

@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.23",
     "pandas>=1.5",
     "scikit-learn>=1.2",
+    "threadpoolctl>=3.1",
     "tqdm>=4.65",
     "pyproj>=3.5",
     "streamlit>=1.31",
@@ -28,6 +29,7 @@ dependencies = [
 test = ["pytest>=8.2"]
 
 [project.scripts]
+seisnetinsight = "seisnetinsight.cli:main"
 seisnetinsight-app = "seisnetinsight.cli:run_app"
 
 [tool.setuptools.packages.find]
