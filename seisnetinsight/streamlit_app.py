@@ -635,7 +635,6 @@ def get_working_session() -> WorkingSession:
 
 def set_working_session(session: WorkingSession) -> None:
     st.session_state[SESSION_KEY] = session
-    _populate_form_state_from_session(session, overwrite=True)
 
 
 def _stop_key(name: str) -> str:
@@ -1004,6 +1003,7 @@ def _render_data_loading(session: WorkingSession) -> None:
             try:
                 new_session = _load_session_from_disk(selected_name)
                 set_working_session(new_session)
+                _populate_form_state_from_session(new_session, overwrite=True)
                 _queue_session_feedback(
                     "success",
                     f"Session '{selected_name}' restored.",
