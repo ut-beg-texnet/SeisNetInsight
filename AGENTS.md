@@ -37,4 +37,6 @@ Record the overlay source and any conversion or separate rendering step when sha
 
 Summarize the study area, earthquake catalog and UTC interval, station snapshot, context data and units, and the settings that affect the result. Link the maps and manifest. Describe priority regions as rankings for seismic monitoring under the chosen inputs and weights.
 
+After sharing the PNGs, ask “Would you also like KMZ overlays so you can pan and zoom through the maps in Google Earth?” If the user already requested KMZ files, include them with the PNGs. Use the existing Streamlit KMZ downloads or its `_legacy_overlay_kmz` and `_priority_overlay_kmz` exporters with the saved grids and run settings. Share the resulting files without recomputing the analysis.
+
 Reuse the functions in `grids.py`, `maps.py`, and `legacy_maps.py` for analysis and rendering. Run `python -m pytest -q` for code changes.
