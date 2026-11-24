@@ -1,5 +1,7 @@
 # SeisNetInsight
 
+SeisNetInsight is an open-source Python tool for identifying high-impact regions for seismic station deployment. It combines source-station proximity, azimuthal-gap coverage, and an optional context layer to produce feature, composite, and priority maps.
+
 **Using an AI agent?** Copy this prompt into your agent. The [headless quickstart](#headless-command-line) has the commands it will use.
 
 ```text
@@ -11,16 +13,6 @@ Set up https://github.com/ut-beg-texnet/SeisNetInsight in this workspace. Reuse 
 Siervo, D., Breton, C., Huang, G.-c. D., and Savvaidis, A. (2026).
 [Data-Driven, Automated Mapping of High-Impact Regions for Seismic Station Deployment](https://doi.org/10.1785/0120250291).
 *Bulletin of the Seismological Society of America*. DOI: **10.1785/0120250291**.
-
-## Map colors and event ordering
-
-Feature and composite maps use `cmcrameri.batlowW_r`: low values are light and high values are dark, matching the published paper. PNG maps and KMZ overlays use the same palette. Categorical priority colors are unchanged.
-
-When enabling BallTree reduction, select **Most recent events first** (the default for new app sessions) or **Input file order**. The selected ordering and radius are saved with the session. Existing sessions without ordering metadata retain input-order behavior. Programmatic callers can pass `keep="most_recent"` explicitly; the helper's legacy default remains `first`.
-
-For weighted clustering, use `context_value` as the contextual feature weight key. Legacy `swd_volume_25km_bbl` keys are supported as aliases; conflicting aliases or unknown weight keys raise an error rather than silently changing the weighting.
-
-SeisNetInsight is an open-source Python tool for identifying high-impact regions for seismic station deployment. It combines source-station proximity, azimuthal-gap coverage, and an optional generic contextual  layer into insightful contour maps and a priority map that can be reviewed in the app or exported as figures and KMZ overlays.
 
 ## What The App Does
 
@@ -64,7 +56,7 @@ The app is organized into three sections:
 
 1. `Data Loading`
    Upload events, stations, optional context CSV, and optional BNA files.
-   Map incoming columns before loading, set context aggregation and radius, and optionally apply BallTree event reduction.
+   Map incoming columns before loading, set context aggregation and radius, and optionally apply BallTree event reduction. When enabled, the app processes the most recent events first by default. Select **Input file order** to use the catalog order.
 2. `Grids Computation`
    Compute primary and secondary source-station distance, ΔGap, context, and composite grids with progress bars and stop controls.
 3. `Maps`
@@ -188,6 +180,8 @@ composite = compute_composite_index(merged, params)
 
 print(composite[["latitude", "longitude", "context_value", "composite_index"]].head())
 ```
+
+When passing feature weights to `classify_priority_clusters`, use `context_value` as the key for the context layer.
 
 ## Output Maps
 
