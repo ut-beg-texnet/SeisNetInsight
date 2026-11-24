@@ -56,6 +56,12 @@ def test_balltree_ordering_and_session_roundtrip(tmp_path, monkeypatch):
     assert restored.balltree_enabled and restored.balltree_distance == .5
     metadata_path = tmp_path / 'recent/metadata.json'
     metadata = json.loads(metadata_path.read_text())
+    metadata.pop('upload_files')
+    metadata_path.write_text(json.dumps(metadata))
+    legacy = _load_session_from_disk('recent')
+    assert len(legacy.events) == 1 and legacy.events.origin_time.iloc[0].year == 2026
+    assert legacy.prepared.settings['balltree'] is None
+    assert legacy.prepared.source['inputs']['events']['path'] is None
     metadata.pop('data_options')
     metadata_path.write_text(json.dumps(metadata))
     assert _load_session_from_disk('recent').balltree_keep == 'first'

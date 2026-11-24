@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ class SessionState:
     column_mapping: Dict[str, Dict[str, str]] = field(default_factory=dict)
     context_label: str = "Context layer"
     data_options: Dict[str, object] = field(default_factory=dict)
+    upload_files: Dict[str, str] = field(default_factory=dict)
 
     def directory(self) -> Path:
         return SESSION_ROOT / self.name
@@ -47,6 +49,7 @@ class SessionState:
             "column_mapping": self.column_mapping,
             "context_label": self.context_label,
             "data_options": self.data_options,
+            "upload_files": self.upload_files,
         }
         (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
@@ -117,7 +120,38 @@ class SessionState:
             column_mapping=metadata.get("column_mapping", {}),
             context_label=metadata.get("context_label", "Context layer"),
             data_options=metadata.get("data_options", {}),
+            upload_files=metadata.get("upload_files", {}),
         )
+
+    @staticmethod
+    def upload_path(key: str, content: bytes) -> str:
+        if key not in {"events", "stations", "context", "boundary"}:
+            raise ValueError(f"Unknown upload type: {key}")
+        suffix = "bna" if key == "boundary" else "csv"
+        return f"uploads/{key}-{hashlib.sha256(content).hexdigest()}.{suffix}"
+
+    def save_uploads(self, uploads: Dict[str, bytes]) -> None:
+        files = {}
+        for key, content in uploads.items():
+            relative = self.upload_path(key, content)
+            path = self.directory() / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            files[key] = relative
+        self.upload_files = files
+
+    def load_uploads(self) -> Dict[str, bytes]:
+        uploads = {}
+        root = self.directory().resolve()
+        for key, relative in self.upload_files.items():
+            path = (root / relative).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"Saved {key} upload is outside the session directory.")
+            content = path.read_bytes()
+            if self.upload_path(key, content) != relative:
+                raise ValueError(f"Saved {key} upload no longer matches the original file.")
+            uploads[key] = content
+        return uploads
 
     def save_dataframe(self, df: pd.DataFrame, key: str) -> None:
         directory = self.directory()

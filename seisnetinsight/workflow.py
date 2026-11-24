@@ -18,7 +18,7 @@ import pandas as pd
 from threadpoolctl import threadpool_limits
 
 from . import data, grids
-from .run_config import WorkflowError, grid_parameters, resolve_config
+from .run_config import WorkflowError, grid_parameters, resolve_config, resolve_priority
 
 FEATURE_MAPS = {
     "subject_primary_weighted": "feature_primary.png",
@@ -45,8 +45,12 @@ class PreparedRun:
     context: pd.DataFrame | None
     boundary: bytes | None
 
+    @property
+    def parameters(self):
+        return grid_parameters(self.settings["grid"])
+
     def summary(self):
-        weights = grid_parameters(self.settings["grid"]).normalized_weights()
+        weights = self.parameters.normalized_weights()
         weights.pop("swd")
         return {
             "config": self.settings, "source": self.source, "counts": self.counts,
@@ -88,14 +92,21 @@ def _prepare(config_path: Path) -> PreparedRun:
         raw = config_path.read_bytes()
     except OSError as exc:
         raise WorkflowError("invalid_config", f"Cannot read {config_path}: {exc}") from exc
-    settings = resolve_config(raw, config_path.parent)
-    source = {"config": {"path": str(config_path), **_fingerprint(raw)}, "inputs": {}}
+    return prepare_inputs(raw, config_path.parent, config_path=config_path)
+
+
+def prepare_inputs(raw: bytes, directory: Path, *, config_path=None, uploads=None) -> PreparedRun:
+    """Validate the same config and input bytes from disk or an upload."""
+    settings = resolve_config(raw, directory)
+    source = {"config": {"path": str(config_path) if config_path is not None else None, **_fingerprint(raw)}, "inputs": {}}
     frames = {}
     boundary = None
     for name, spec in settings["inputs"].items():
         path = Path(spec["path"])
         try:
-            content = path.read_bytes()
+            content = path.read_bytes() if uploads is None else uploads[name]
+        except KeyError as exc:
+            raise WorkflowError("invalid_input", f"{name}: the configured upload is missing.") from exc
         except OSError as exc:
             raise WorkflowError("invalid_input", f"{name}: cannot read {path}: {exc}") from exc
         source["inputs"][name] = {"path": str(path), **_fingerprint(content)}
@@ -216,49 +227,100 @@ def _finish(stage, output_dir, kind, details, artifacts):
     }
 
 
-def run(config_path: Path, output_dir: Path, *, progress=None) -> dict:
-    """Compute the feature, composite, and priority grids and publish a complete run."""
+def compute_feature(prepared: PreparedRun, grid, name: str, *, progress=None, should_stop=None) -> pd.DataFrame:
+    """Run one feature stage, with the same progress and cancellation hooks in either interface."""
+    params = prepared.parameters
+    hooks = {"progress": progress, "should_stop": should_stop}
+    if name == "subject":
+        return grids.compute_subject_grids(prepared.events, prepared.stations, grid, params, **hooks)
+    if name == "gap":
+        return grids.compute_gap_grid(prepared.events, prepared.stations, grid, params, **hooks)
+    if name == "context":
+        return grids.compute_context_grid(prepared.context, grid, params, **hooks)
+    raise ValueError(f"Unknown feature stage: {name}.")
+
+
+def compute_composite(prepared: PreparedRun, features: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    required = ["subject", "gap"]
+    if prepared.context is not None:
+        required.append("context")
+    missing = [key for key in required if key not in features]
+    if missing:
+        raise WorkflowError("missing_grids", f"Compute these grids before the composite index: {', '.join(missing)}.")
+    merged = grids.merge_grids(*(features[key] for key in required))
+    composite = grids.compute_composite_index(merged, prepared.parameters)
+    if not np.isfinite(composite.select_dtypes(include="number").to_numpy()).all():
+        raise WorkflowError("analysis_failed", "The calculated grid has non-finite values. Check the input values and settings.")
+    return composite
+
+
+@dataclass
+class Classification:
+    grid: pd.DataFrame
+    settings: dict
+    feature_weights: dict
+
+
+def classify(prepared: PreparedRun, composite: pd.DataFrame, options=None) -> Classification:
+    """Cluster and rank the completed composite grid."""
     from .maps import DEFAULT_PRIORITY_FEATURES, classify_priority_clusters
 
+    options = resolve_priority(prepared.settings["priority"] if options is None else options, len(composite))
+    weights = prepared.parameters.normalized_weights()
+    feature_weights = dict(zip(DEFAULT_PRIORITY_FEATURES, (weights[k] for k in ("subject_primary", "subject_secondary", "gap", "context"))))
+    with threadpool_limits(limits=1):
+        priority = classify_priority_clusters(composite, feature_weights=feature_weights, **options)
+    return Classification(priority, options, feature_weights)
+
+
+def _write_analysis(stage, output_dir, prepared, composite, classification, progress):
+    details = prepared.summary()
+    details["config"] = {**prepared.settings, "priority": classification.settings}
+    details["counts"] = {**prepared.counts, "grid_cells": len(composite)}
+    details["warnings"] = list(prepared.warnings)
+    details["event_recency_reference_utc"] = prepared.events["origin_time"].max().isoformat()
+    gap_events = grids._clip_to_aoi(prepared.events, prepared.parameters)
+    details["gap_recency_reference_utc"] = gap_events["origin_time"].max().isoformat()
+    details["clustering_feature_weights"] = classification.feature_weights
+    priority = classification.grid
+    counts = priority["priority_label"].value_counts().to_dict()
+    details["counts"]["priority_labels"] = counts
+    if len(counts) < classification.settings["n_clusters"]:
+        details["warnings"].append("Clustering produced fewer distinct priority groups than requested.")
+
+    stations = grids._clip_to_aoi(prepared.stations, prepared.parameters)[["latitude", "longitude"]]
+    artifacts = {}
+    for key, name, frame in (
+        ("feature_composite_grid", GRID_FILE, composite), ("priority_grid", PRIORITY_FILE, priority),
+        ("map_stations", STATION_FILE, stations),
+    ):
+        path = stage / name
+        frame.to_csv(path, index=False)
+        artifacts[key] = _artifact(path)
+    if prepared.boundary is not None:
+        path = stage / BOUNDARY_FILE
+        path.write_bytes(prepared.boundary)
+        artifacts["boundary"] = _artifact(path)
+    artifacts.update(_render_maps(stage, composite, priority, stations, prepared.boundary, details["config"], progress))
+    return _finish(stage, output_dir, "analysis", details, artifacts)
+
+
+def export_analysis(prepared, composite, classification, output_dir: Path, *, progress=None) -> dict:
+    """Export an analysis computed in either interface with the canonical manifest."""
+    with _destination(output_dir) as stage:
+        return _write_analysis(stage, output_dir, prepared, composite, classification, progress)
+
+
+def run(config_path: Path, output_dir: Path, *, progress=None) -> dict:
+    """Compute the feature, composite, and priority grids and publish a complete run."""
     with _destination(output_dir) as stage:
         prepared = _prepare(config_path)
-        details = prepared.summary()
-        params = grid_parameters(prepared.settings["grid"])
-        grid = grids.generate_grid(params)
-        details["counts"]["grid_cells"] = grid.size
-        details["event_recency_reference_utc"] = prepared.events["origin_time"].max().isoformat()
-        gap_events = grids._clip_to_aoi(prepared.events, params)
-        details["gap_recency_reference_utc"] = gap_events["origin_time"].max().isoformat()
-        subject = grids.compute_subject_grids(prepared.events, prepared.stations, grid, params, progress=progress)
-        gap = grids.compute_gap_grid(prepared.events, prepared.stations, grid, params, progress=progress)
-        context = grids.compute_context_grid(prepared.context, grid, params, progress=progress)
-        composite = grids.compute_composite_index(grids.merge_grids(subject, gap, context), params)
-        if not np.isfinite(composite.select_dtypes(include="number").to_numpy()).all():
-            raise WorkflowError("analysis_failed", "The calculated grid has non-finite values. Check the input values and settings.")
-        weights = details["normalized_weights"]
-        feature_weights = dict(zip(DEFAULT_PRIORITY_FEATURES, (weights[k] for k in ("subject_primary", "subject_secondary", "gap", "context"))))
-        details["clustering_feature_weights"] = feature_weights
-        with threadpool_limits(limits=1):
-            priority = classify_priority_clusters(composite, feature_weights=feature_weights, **prepared.settings["priority"])
-        details["counts"]["priority_labels"] = priority["priority_label"].value_counts().to_dict()
-        if len(details["counts"]["priority_labels"]) < prepared.settings["priority"]["n_clusters"]:
-            details["warnings"].append("Clustering produced fewer distinct priority groups than requested.")
-
-        stations = grids._clip_to_aoi(prepared.stations, params)[["latitude", "longitude"]]
-        artifacts = {}
-        for key, name, frame in (
-            ("feature_composite_grid", GRID_FILE, composite), ("priority_grid", PRIORITY_FILE, priority),
-            ("map_stations", STATION_FILE, stations),
-        ):
-            path = stage / name
-            frame.to_csv(path, index=False)
-            artifacts[key] = _artifact(path)
-        if prepared.boundary is not None:
-            path = stage / BOUNDARY_FILE
-            path.write_bytes(prepared.boundary)
-            artifacts["boundary"] = _artifact(path)
-        artifacts.update(_render_maps(stage, composite, priority, stations, prepared.boundary, prepared.settings, progress))
-        return _finish(stage, output_dir, "analysis", details, artifacts)
+        grid = grids.generate_grid(prepared.parameters)
+        names = ["subject", "gap"] + (["context"] if prepared.context is not None else [])
+        features = {name: compute_feature(prepared, grid, name, progress=progress) for name in names}
+        composite = compute_composite(prepared, features)
+        classification = classify(prepared, composite)
+        return _write_analysis(stage, output_dir, prepared, composite, classification, progress)
 
 
 def render(manifest_path: Path, output_dir: Path, *, progress=None) -> dict:

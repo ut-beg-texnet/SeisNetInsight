@@ -96,6 +96,10 @@ Column names can be mapped in the UI, and the loaders also recognize common alia
 
 ## Programmatic Usage
 
+The app and CLI share input validation, grid calculations, priority classification, and the analysis export. After computing the grids in the app, use **Prepare analysis bundle** in the priority map section, then **Download analysis bundle**. The ZIP contains the same manifest, grids, and canonical PNGs as the CLI with matching settings. The app's preview decorations and KMZ downloads are available separately. Run provenance identifies the source files and time of each run.
+
+Saved app sessions retain the original uploads for reproducibility. For older sessions that only saved processed inputs, recompute the grids before preparing a bundle. The manifest identifies the use of the saved processed data.
+
 ### Headless command line
 
 From a checkout installed with `python -m pip install .`, run the bundled sample:
