@@ -1,5 +1,11 @@
 # SeisNetInsight
 
+**Using an AI agent?** Copy this prompt into your agent. The [headless quickstart](#headless-command-line) has the commands it will use.
+
+```text
+Set up https://github.com/ut-beg-texnet/SeisNetInsight in this workspace. Reuse the checkout if it is already here. Install it in a project-local Python environment, then follow the README's headless quickstart to validate and run the bundled sample with JSON output. Report the run manifest and map paths.
+```
+
 ## Published paper
 
 Siervo, D., Breton, C., Huang, G.-c. D., and Savvaidis, A. (2026).
