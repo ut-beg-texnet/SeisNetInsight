@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
-import math
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
@@ -28,20 +28,10 @@ from seisnetinsight.config import (
     parameter_from_inputs,
 )
 from seisnetinsight.data import (
-    EXPECTED_EVENT_COLUMNS,
-    EXPECTED_STATION_COLUMNS,
     COLUMN_ALIASES,
-    balltree_reduce_events,
-    load_context_points,
-    load_events,
-    load_stations,
 )
 from seisnetinsight.grids import (
     GridDefinition,
-    compute_composite_index,
-    compute_context_grid,
-    compute_gap_grid,
-    compute_subject_grids,
     generate_grid,
     merge_grids,
 )
@@ -51,8 +41,10 @@ from seisnetinsight.legacy_maps import (
     render_legacy_contour,
     render_priority_clusters,
 )
-from seisnetinsight.maps import PRIORITY_COLORS, PRIORITY_LEVELS, classify_priority_clusters
+from seisnetinsight.maps import PRIORITY_COLORS, PRIORITY_LEVELS
+from seisnetinsight.run_config import grid_settings
 from seisnetinsight.sessions import SessionFiles, SessionState, list_sessions
+from seisnetinsight import workflow
 
 
 def _default_event_columns() -> Dict[str, str]:
@@ -171,7 +163,6 @@ class WorkingSession:
     context: Optional[pd.DataFrame] = None
     grid: Optional[GridDefinition] = None
     grids: Dict[str, pd.DataFrame] = field(default_factory=dict)
-    column_warnings: Dict[str, List[str]] = field(default_factory=dict)
     balltree_enabled: bool = False
     balltree_distance: float = 1.0
     balltree_keep: str = "most_recent"
@@ -181,6 +172,11 @@ class WorkingSession:
     stations_columns: Dict[str, str] = field(default_factory=_default_station_columns)
     context_columns: Dict[str, str] = field(default_factory=_default_context_columns)
     context_label: str = "Context layer"
+    uploads: Dict[str, bytes] = field(default_factory=dict)
+    upload_columns: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    prepared: Optional[workflow.PreparedRun] = None
+    legacy_grids: bool = False
+    bundle: Optional[tuple[dict, bytes]] = None
 
     @property
     def data_loaded(self) -> bool:
@@ -196,10 +192,12 @@ class WorkingSession:
 
     def ensure_grid(self) -> GridDefinition:
         if self.grid is None:
-            self.grid = generate_grid(self.parameters)
+            self.grid = generate_grid(self.prepared.parameters)
         return self.grid
 
     def merged(self) -> Optional[pd.DataFrame]:
+        if "composite" in self.grids:
+            return self.grids["composite"]
         frames = []
         if "subject" in self.grids:
             frames.append(self.grids["subject"])
@@ -209,25 +207,7 @@ class WorkingSession:
             frames.append(self.grids["context"])
         if not frames:
             return None
-        merged = merge_grids(*frames)
-        if "composite" in self.grids:
-            composite_columns = [
-                "latitude",
-                "longitude",
-                "composite_index",
-                "contrib_subject_primary",
-                "contrib_subject_secondary",
-                "contrib_gap",
-                "contrib_context",
-            ]
-            if "context_value" not in merged.columns:
-                composite_columns.insert(2, "context_value")
-            merged = merged.merge(
-                self.grids["composite"][composite_columns],
-                on=["latitude", "longitude"],
-                how="left",
-            )
-        return merged
+        return merge_grids(*frames)
 
 
 SESSION_KEY = "seisnetinsight_session"
@@ -655,7 +635,6 @@ def get_working_session() -> WorkingSession:
 
 def set_working_session(session: WorkingSession) -> None:
     st.session_state[SESSION_KEY] = session
-    _populate_form_state_from_session(session, overwrite=True)
 
 
 def _stop_key(name: str) -> str:
@@ -687,12 +666,45 @@ def _bna_bytes(session: WorkingSession) -> Optional[bytes]:
     return None
 
 
-def _show_column_warnings(warnings: Dict[str, List[str]]) -> None:
-    for dataset, missing in warnings.items():
-        if missing:
-            st.warning(
-                f"{dataset} is missing expected columns: {', '.join(missing)}."
-            )
+def _prepare_session(session: WorkingSession, parameters: GridParameters) -> workflow.PreparedRun:
+    directory = (session.storage or SessionState(session.name, parameters, SessionFiles())).directory()
+    uploads = session.uploads
+    columns = session.upload_columns
+    if not uploads:
+        # Older sessions persist the processed catalog, which may already have
+        # passed BallTree reduction. Use that snapshot exactly once.
+        uploads = {
+            key: frame.to_csv(index=False).encode("utf-8")
+            for key, frame in (("events", session.events), ("stations", session.stations), ("context", session.context))
+            if frame is not None
+        }
+        boundary = _bna_bytes(session)
+        if boundary is not None:
+            uploads["boundary"] = boundary
+        columns = {}
+    inputs = {}
+    for key, content in uploads.items():
+        path = SessionState.upload_path(key, content)
+        inputs[key] = path if key == "boundary" else {"path": path, "columns": columns.get(key, {})}
+    grid = grid_settings(parameters)
+    if "context" not in inputs:
+        # The UI retains its default context weight for future uploads.
+        # An omitted CLI weight has the same effective behavior.
+        grid.pop("weight_context")
+    config = {"schema_version": 1, "inputs": inputs, "grid": grid}
+    if session.uploads and session.balltree_enabled:
+        config["balltree"] = {"distance_km": session.balltree_distance, "keep": session.balltree_keep}
+    prepared = workflow.prepare_inputs(json.dumps(config).encode("utf-8"), directory, uploads=uploads)
+    if not session.uploads:
+        prepared.warnings.append("Original uploads are unavailable. This run uses the processed data saved in the legacy session.")
+        for key in prepared.source["inputs"]:
+            prepared.source["inputs"][key]["path"] = None
+    return prepared
+
+
+def _set_prepared(session: WorkingSession, prepared: workflow.PreparedRun) -> None:
+    session.prepared = prepared
+    session.events, session.stations, session.context = prepared.events, prepared.stations, prepared.context
 
 
 def _load_session_from_disk(name: str) -> WorkingSession:
@@ -720,6 +732,8 @@ def _load_session_from_disk(name: str) -> WorkingSession:
         balltree_enabled=state.data_options.get("balltree_enabled", False),
         balltree_distance=state.data_options.get("balltree_distance", 1.0),
         balltree_keep=state.data_options.get("balltree_keep", "first"),
+        uploads=state.load_uploads(),
+        upload_columns=state.column_mapping,
     )
     for path in state.list_bna():
         try:
@@ -729,12 +743,12 @@ def _load_session_from_disk(name: str) -> WorkingSession:
     ws.events = state.load_source("events")
     ws.stations = state.load_source("stations")
     ws.context = state.load_source("context")
-    ws.grid = generate_grid(ws.parameters)
-    warnings: Dict[str, List[str]] = {}
-    warnings["Events"] = [] if ws.events is not None else EXPECTED_EVENT_COLUMNS
-    warnings["Stations"] = [] if ws.stations is not None else EXPECTED_STATION_COLUMNS
-    warnings[ws.context_label] = [] if ws.context is not None else []
-    ws.column_warnings = warnings
+    if ws.uploads or ws.data_loaded:
+        try:
+            _set_prepared(ws, _prepare_session(ws, ws.parameters))
+        except workflow.WorkflowError:
+            if ws.uploads:
+                raise
     for key in ["subject", "gap", "context", "swd", "composite"]:
         if key in state.grids:
             frame = state.load_dataframe(key)
@@ -752,6 +766,7 @@ def _load_session_from_disk(name: str) -> WorkingSession:
                 ws.grids["context"] = frame
                 continue
             ws.grids[key] = frame
+    ws.legacy_grids = bool(ws.grids and not state.data_options.get("shared_workflow"))
     return ws
 
 
@@ -763,15 +778,15 @@ def _save_sources(
 ) -> None:
     if session.storage is None:
         session.storage = SessionState(session.name, session.parameters, SessionFiles(), column_mapping={})
-    session.storage.column_mapping["events"] = dict(session.events_columns)
-    session.storage.column_mapping["stations"] = dict(session.stations_columns)
-    session.storage.column_mapping["context"] = dict(session.context_columns)
+    session.storage.column_mapping = {key: dict(mapping) for key, mapping in session.upload_columns.items()}
     session.storage.context_label = session.context_label
     session.storage.data_options = {
         "balltree_enabled": session.balltree_enabled,
         "balltree_distance": session.balltree_distance,
         "balltree_keep": session.balltree_keep,
+        "shared_workflow": True,
     }
+    session.storage.save_uploads(session.uploads)
     session.storage.save_source(events, "events")
     session.storage.save_source(stations, "stations")
     if context is not None:
@@ -810,162 +825,143 @@ def build_working_session(
     if events_bytes is None or stations_bytes is None:
         raise ValueError("Events and stations files are required.")
 
-    resolved_events_columns = events_columns or _default_event_columns()
-    resolved_stations_columns = stations_columns or _default_station_columns()
-    resolved_context_columns = context_columns or _default_context_columns()
-
-    events_df, events_missing = load_events(io.BytesIO(events_bytes), column_map=resolved_events_columns)
-    stations_df, stations_missing = load_stations(io.BytesIO(stations_bytes), column_map=resolved_stations_columns)
-    context_df = None
-    context_missing: List[str] = []
+    if not session_name.strip() or session_name in {".", ".."} or any(char in session_name for char in "/\\:"):
+        raise ValueError("Enter a session name without path separators.")
+    uploads = {"events": events_bytes, "stations": stations_bytes}
     if context_bytes is not None:
-        context_df, context_missing = load_context_points(
-            io.BytesIO(context_bytes),
-            column_map=resolved_context_columns,
-        )
-
-    warnings = {
-        "Events": events_missing,
-        "Stations": stations_missing,
-        context_label: context_missing,
+        uploads["context"] = context_bytes
+    if bna_data:
+        uploads["boundary"] = bna_data[min(bna_data)]
+    columns = {
+        "events": dict(events_columns or {}),
+        "stations": dict(stations_columns or {}),
+        "context": dict(context_columns or {}),
     }
-    if balltree_enabled:
-        events_df = balltree_reduce_events(events_df, distance_threshold_km=balltree_distance, keep=balltree_keep)
 
     session = WorkingSession(
         name=session_name,
         parameters=parameters,
-        events=events_df,
-        stations=stations_df,
-        context=context_df,
         balltree_enabled=balltree_enabled,
         balltree_distance=balltree_distance,
         balltree_keep=balltree_keep,
-        column_warnings=warnings,
-        events_columns=dict(resolved_events_columns),
-        stations_columns=dict(resolved_stations_columns),
-        context_columns=dict(resolved_context_columns),
+        events_columns=columns["events"] or _default_event_columns(),
+        stations_columns=columns["stations"] or _default_station_columns(),
+        context_columns=columns["context"] or _default_context_columns(),
         context_label=context_label,
+        uploads=uploads,
+        upload_columns=columns,
     )
-    session.grid = generate_grid(parameters)
     if bna_data:
         session.bna_files.update(bna_data)
+    _set_prepared(session, _prepare_session(session, parameters))
     return session
 
 
-def _run_subject_grid(session: WorkingSession) -> None:
+def _invalidate_grids(session: WorkingSession, *names: str) -> None:
+    for name in names:
+        session.grids.pop(name, None)
+        if session.storage:
+            session.storage.grids.pop(name, None)
+            if name == "context":
+                session.storage.grids.pop("swd", None)
+    session.bundle = None
+
+
+def _require_prepared(session: WorkingSession) -> workflow.PreparedRun:
+    if session.prepared is None:
+        _set_prepared(session, _prepare_session(session, session.parameters))
+    return session.prepared
+
+
+def _reset_legacy_grids(session: WorkingSession) -> None:
+    if session.legacy_grids:
+        _invalidate_grids(session, "subject", "gap", "context", "composite")
+        session.legacy_grids = False
+        if session.storage:
+            session.storage.data_options["shared_workflow"] = True
+
+
+def _update_parameters(session: WorkingSession, parameters: GridParameters) -> None:
+    if parameters == session.parameters:
+        return
+    if session.data_loaded:
+        updated = _prepare_session(session, parameters)
+        previous = session.prepared.settings["grid"] if session.prepared else {}
+        current = updated.settings["grid"]
+        changed = {key for key in current if current[key] != previous.get(key)}
+        if changed & {"lons", "lats", "grid_step"}:
+            session.grid = None
+            _invalidate_grids(session, "subject", "gap", "context", "composite")
+        elif changed:
+            _invalidate_grids(session, "composite")
+            if changed & {"subject_primary_radius_km", "subject_secondary_radius_km",
+                          "subject_primary_min_stations", "subject_secondary_min_stations", "half_time_years"}:
+                _invalidate_grids(session, "subject")
+            if changed & {"gap_search_km", "gap_target_angle_deg", "half_time_years"}:
+                _invalidate_grids(session, "gap")
+            if changed & {"context_radius_km", "context_aggregation"}:
+                _invalidate_grids(session, "context")
+        _set_prepared(session, updated)
+    session.parameters = parameters
+    if session.storage:
+        session.storage.parameters = parameters
+
+
+def _run_feature_grid(session: WorkingSession, name: str, label: str) -> None:
     status = st.empty()
-    progress = st.progress(0.0, text="Starting source-station distance grids…")
+    progress = st.progress(0.0, text=f"Starting {label}…")
 
     def update(fraction: float, message: str) -> None:
         progress.progress(min(fraction, 1.0), text=message)
 
     try:
-        grid = session.ensure_grid()
-        result = compute_subject_grids(
-            session.events,
-            session.stations,
-            grid,
-            session.parameters,
-            progress=update,
-            should_stop=lambda: _stop_requested("subject"),
+        prepared = _require_prepared(session)
+        _reset_legacy_grids(session)
+        result = workflow.compute_feature(
+            prepared, session.ensure_grid(), name, progress=update,
+            should_stop=lambda: _stop_requested(name),
         )
-        session.grids["subject"] = result
+        _invalidate_grids(session, "composite")
+        session.grids[name] = result
         if session.storage:
-            session.storage.save_dataframe(result, "subject")
-        status.success("Primary and secondary source-station distance grids computed.")
+            session.storage.save_dataframe(result, name)
+        status.success(f"{label} computed.")
     except InterruptedError:
-        status.warning("Source-station distance grid computation stopped by user.")
+        status.warning(f"{label} computation stopped by user.")
     except Exception as exc:
-        status.error(f"Failed to compute source-station distance grids: {exc}")
+        status.error(f"Failed to compute {label}: {exc}")
     finally:
         progress.empty()
-        _reset_stop("subject")
-        st.session_state[_run_key("subject")] = False
+        _reset_stop(name)
+        st.session_state[_run_key(name)] = False
+
+
+def _run_subject_grid(session: WorkingSession) -> None:
+    _run_feature_grid(session, "subject", "Primary and secondary source-station distance grids")
 
 
 def _run_gap_grid(session: WorkingSession) -> None:
-    status = st.empty()
-    progress = st.progress(0.0, text="Starting ΔGap grid…")
-
-    def update(fraction: float, message: str) -> None:
-        progress.progress(min(fraction, 1.0), text=message)
-
-    try:
-        grid = session.ensure_grid()
-        result = compute_gap_grid(
-            session.events,
-            session.stations,
-            grid,
-            session.parameters,
-            progress=update,
-            should_stop=lambda: _stop_requested("gap"),
-        )
-        session.grids["gap"] = result
-        if session.storage:
-            session.storage.save_dataframe(result, "gap")
-        status.success("ΔGap grid computed.")
-    except InterruptedError:
-        status.warning("ΔGap computation stopped by user.")
-    except Exception as exc:
-        status.error(f"Failed to compute ΔGap grid: {exc}")
-    finally:
-        progress.empty()
-        _reset_stop("gap")
-        st.session_state[_run_key("gap")] = False
+    _run_feature_grid(session, "gap", "ΔGap grid")
 
 
 def _run_context_grid(session: WorkingSession) -> None:
-    if not session.has_context_input:
-        session.grids.pop("context", None)
-        if session.storage is not None and "context" in session.storage.grids:
-            session.storage.grids.pop("context", None)
-            session.storage.save_metadata()
-        st.session_state[_run_key("context")] = False
-        return
-
-    status = st.empty()
-    progress = st.progress(0.0, text="Starting context grid…")
-
-    def update(fraction: float, message: str) -> None:
-        progress.progress(min(fraction, 1.0), text=message)
-
-    try:
-        grid = session.ensure_grid()
-        result = compute_context_grid(
-            session.context,
-            grid,
-            session.parameters,
-            aggregation=session.parameters.context_aggregation,
-            radius_km=session.parameters.context_radius_km,
-            progress=update,
-            should_stop=lambda: _stop_requested("context"),
-        )
-        session.grids["context"] = result
-        if session.storage:
-            session.storage.save_dataframe(result, "context")
-        status.success(f"{session.context_label} grid computed.")
-    except InterruptedError:
-        status.warning(f"{session.context_label} computation stopped by user.")
-    except Exception as exc:
-        status.error(f"Failed to compute {session.context_label} grid: {exc}")
-    finally:
-        progress.empty()
-        _reset_stop("context")
-        st.session_state[_run_key("context")] = False
+    _run_feature_grid(session, "context", f"{session.context_label} grid")
 
 
 def _run_composite_grid(session: WorkingSession) -> None:
-    merged = session.merged()
-    if merged is None:
-        st.warning("Compute the source-station distance and ΔGap grids before the composite index.")
-        return
     try:
-        composite = compute_composite_index(merged, session.parameters)
+        prepared = _require_prepared(session)
+        if session.legacy_grids:
+            st.warning("Recompute the feature grids from the restored inputs before rebuilding the composite index.")
+            return
+        composite = workflow.compute_composite(prepared, session.grids)
+        session.bundle = None
         session.grids["composite"] = composite
         if session.storage:
             session.storage.save_dataframe(composite, "composite")
         st.success("Composite index grid computed.")
+    except workflow.WorkflowError as exc:
+        st.warning(str(exc))
     except Exception as exc:
         st.error(f"Failed to compute composite index: {exc}")
 
@@ -1007,6 +1003,7 @@ def _render_data_loading(session: WorkingSession) -> None:
             try:
                 new_session = _load_session_from_disk(selected_name)
                 set_working_session(new_session)
+                _populate_form_state_from_session(new_session, overwrite=True)
                 _queue_session_feedback(
                     "success",
                     f"Session '{selected_name}' restored.",
@@ -1285,67 +1282,20 @@ def _render_data_loading(session: WorkingSession) -> None:
     parameters = parameter_from_inputs(inputs, logger=st.warning)
     session.context_label = context_label.strip() or "Context layer"
 
-    previous_params = session.parameters
-
-    def _tuple_changed(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
-        if len(a) != len(b):
-            return True
-        return any(not math.isclose(float(x), float(y), rel_tol=1e-9, abs_tol=1e-9) for x, y in zip(a, b))
-
-    def _scalar_changed(a: float, b: float) -> bool:
-        return not math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-9)
-
-    geometry_changed = (
-        _tuple_changed(getattr(previous_params, "lons", ()), getattr(parameters, "lons", ()))
-        or _tuple_changed(getattr(previous_params, "lats", ()), getattr(parameters, "lats", ()))
-        or _scalar_changed(getattr(previous_params, "grid_step", 0.0), getattr(parameters, "grid_step", 0.0))
-    )
-
-    float_fields = [
-        "subject_primary_radius_km",
-        "subject_primary_weight",
-        "subject_secondary_radius_km",
-        "subject_secondary_weight",
-        "gap_search_km",
-        "gap_target_angle_deg",
-        "weight_gap",
-        "context_radius_km",
-        "weight_context",
-        "half_time_years",
-    ]
-    int_fields = [
-        "subject_primary_min_stations",
-        "subject_secondary_min_stations",
-    ]
-
-    params_changed = geometry_changed
-    if not params_changed:
-        for field in float_fields:
-            old_value = getattr(previous_params, field, None)
-            new_value = getattr(parameters, field, None)
-            if old_value is None or new_value is None:
-                if old_value != new_value:
-                    params_changed = True
-                    break
-            elif _scalar_changed(old_value, new_value):
-                params_changed = True
-                break
-    if not params_changed:
-        for field in int_fields:
-            if getattr(previous_params, field, None) != getattr(parameters, field, None):
-                params_changed = True
-                break
-    if not params_changed:
-        if getattr(previous_params, "context_aggregation", None) != getattr(parameters, "context_aggregation", None):
-            params_changed = True
-    session.parameters = parameters
-    if session.storage:
-        session.storage.parameters = session.parameters
-    if geometry_changed:
-        session.grid = None
-        session.grids.clear()
-    elif params_changed:
-        session.grids.pop("composite", None)
+    try:
+        # Keep the typed order and values. The shared validator must see
+        # malformed or reversed bounds instead of a fallback from parse_bounds.
+        parameters.lons = tuple(float(value) for value in lons_input.split(","))
+        parameters.lats = tuple(float(value) for value in lats_input.split(","))
+    except ValueError:
+        st.error("Enter longitude and latitude bounds as two decimal degrees separated by a comma.")
+        return
+    try:
+        _update_parameters(session, parameters)
+    except ValueError as exc:
+        st.error(f"Settings were not applied: {exc}")
+        # A new upload can make draft settings valid even if the current
+        # session's data do not cover the newly selected bounds.
 
     def process_inputs(run_all: bool) -> None:
         try:
@@ -1371,7 +1321,8 @@ def _render_data_loading(session: WorkingSession) -> None:
             st.error(str(exc))
             return
         set_working_session(new_session)
-        _show_column_warnings(new_session.column_warnings)
+        for warning in new_session.prepared.warnings:
+            st.warning(warning)
         st.markdown("**Events preview**")
         st.dataframe(new_session.events.head(10), width="stretch")
         st.markdown("**Stations preview**")
@@ -1454,6 +1405,17 @@ def _render_grid_section(session: WorkingSession) -> None:
         st.success("Merged grid summary")
         st.dataframe(merged.describe(), width="stretch")
 
+
+
+def _analysis_bundle(session: WorkingSession, classification: workflow.Classification) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="seisnetinsight-analysis-") as workspace:
+        output = Path(workspace) / "analysis"
+        workflow.export_analysis(_require_prepared(session), session.grids["composite"], classification, output)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(output.iterdir()):
+                archive.write(path, arcname=path.name)
+        return buffer.getvalue()
 
 
 def _render_maps_section(session: WorkingSession) -> None:
@@ -1549,13 +1511,6 @@ def _render_maps_section(session: WorkingSession) -> None:
         key="priority_kmeans_n_init",
         help="Number of K-means restarts. Higher values can improve cluster stability but take longer.",
     )
-    normalized_weights = session.parameters.normalized_weights()
-    clustering_feature_weights = {
-        "subject_primary_weighted": normalized_weights.get("subject_primary", 0.0),
-        "subject_secondary_weighted": normalized_weights.get("subject_secondary", 0.0),
-        "delta_gap90_weighted": normalized_weights.get("gap", 0.0),
-        "context_value": normalized_weights.get("context", 0.0),
-    }
     apply_feature_weight_scaling = st.checkbox(
         "Emphasize priority weights during clustering",
         value=True,
@@ -1564,13 +1519,12 @@ def _render_maps_section(session: WorkingSession) -> None:
     )
 
     try:
-        prioritized = classify_priority_clusters(
+        classification = workflow.classify(
+            _require_prepared(session),
             merged,
-            n_clusters=n_clusters,
-            n_init=int(n_init),
-            apply_feature_weights=apply_feature_weight_scaling,
-            feature_weights=clustering_feature_weights,
+            {"n_clusters": n_clusters, "n_init": int(n_init), "apply_feature_weights": apply_feature_weight_scaling},
         )
+        prioritized = classification.grid
     except Exception as exc:
         st.error(f"Priority clustering failed: {exc}")
         return
@@ -1693,6 +1647,20 @@ def _render_maps_section(session: WorkingSession) -> None:
         mime="text/csv",
         help="Download the per-grid-cell priority labels as a CSV table.",
     )
+    if session.legacy_grids:
+        st.caption("Recompute the feature and composite grids to export a bundle for this legacy session.")
+        return
+    if st.button("Prepare analysis bundle", help="Package the grids, maps, and manifest in the same format as the CLI."):
+        try:
+            with st.spinner("Preparing analysis bundle…"):
+                session.bundle = (classification.settings, _analysis_bundle(session, classification))
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not prepare the analysis bundle: {exc}")
+    if session.bundle is not None and session.bundle[0] == classification.settings:
+        st.download_button(
+            "Download analysis bundle", session.bundle[1], file_name=f"{session.name}_analysis.zip",
+            mime="application/zip", help="Includes manifest.json, analysis grids, overlays, and canonical map PNGs.",
+        )
 
 
 def main() -> None:

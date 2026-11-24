@@ -73,11 +73,16 @@ def _unique_keys(pairs):
     return result
 
 
+def grid_settings(params: GridParameters) -> dict:
+    settings = asdict(params)
+    settings.pop("overwrite")
+    settings["context_radius_km"] = settings.pop("swd_radius_km")
+    settings["weight_context"] = settings.pop("weight_swd")
+    return settings
+
+
 def _grid(options, has_context, max_cells):
-    defaults = asdict(GridParameters())
-    defaults.pop("overwrite")
-    defaults["context_radius_km"] = defaults.pop("swd_radius_km")
-    defaults["weight_context"] = defaults.pop("weight_swd")
+    defaults = grid_settings(GridParameters())
     settings = {**defaults, **_object(options, defaults, "grid")}
     for name, limit in (("lats", 90), ("lons", 180)):
         pair = settings[name]
@@ -128,6 +133,16 @@ def grid_parameters(settings):
     return GridParameters(**kwargs)
 
 
+def resolve_priority(options, cell_count):
+    defaults = {"n_clusters": 4, "random_state": 42, "n_init": 20, "apply_feature_weights": True}
+    priority = {**defaults, **_object(options, defaults, "priority")}
+    _number(priority["n_clusters"], "priority.n_clusters", 2, maximum=cell_count, integer=True)
+    _number(priority["n_init"], "priority.n_init", 1, integer=True)
+    _number(priority["random_state"], "priority.random_state", 0, maximum=2**32 - 1, integer=True)
+    _boolean(priority["apply_feature_weights"], "priority.apply_feature_weights")
+    return priority
+
+
 def resolve_config(raw: bytes, directory: Path) -> dict:
     """Read the public JSON schema and make defaults and input paths explicit."""
     try:
@@ -174,12 +189,7 @@ def resolve_config(raw: bytes, directory: Path) -> dict:
 
         max_cells = _number(config.get("max_grid_cells", 1_000_000), "max_grid_cells", 4, integer=True)
         grid, cell_count = _grid(config.get("grid", {}), "context" in inputs, max_cells)
-        priority_defaults = {"n_clusters": 4, "random_state": 42, "n_init": 20, "apply_feature_weights": True}
-        priority = {**priority_defaults, **_object(config.get("priority", {}), priority_defaults, "priority")}
-        _number(priority["n_clusters"], "priority.n_clusters", 2, maximum=cell_count, integer=True)
-        _number(priority["n_init"], "priority.n_init", 1, integer=True)
-        _number(priority["random_state"], "priority.random_state", 0, maximum=2**32 - 1, integer=True)
-        _boolean(priority["apply_feature_weights"], "priority.apply_feature_weights")
+        priority = resolve_priority(config.get("priority", {}), cell_count)
         maps = {"basemap": False, "dpi": 150}
         maps.update(_object(config.get("maps", {}), maps, "maps"))
         _boolean(maps["basemap"], "maps.basemap")
