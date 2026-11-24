@@ -20,6 +20,15 @@ For example, ask “Should I use your earthquake catalog or download the USGS ca
 
 For downloads, keep the original response and record the source URL or query, retrieval time, coverage, units, and any conversion or filter. Check the data before using it. Report what was retained after date, magnitude, or quality filters and spatial event reduction. Catalog quality filtering and BallTree reduction are separate steps. Describe BallTree as reducing nearby events by distance and retaining one according to the chosen ordering. Keep input files and generated runs out of commits unless the user asks to publish them.
 
+## Ask what to show on the maps
+
+If the user has not specified map annotations, ask “Would you like any boundaries or city labels on the maps?” Offer useful overlays for the area, such as a study boundary, basin outline, or nearby cities, and let the user choose which to include.
+
+- **Polygons.** Ask for a boundary file or a source URL. Use a BNA file through `inputs.boundary` in the CLI or the BNA upload in Streamlit. If the file is in another format, check its coordinate reference system before converting it. Explain that the BNA overlay draws an outline. Ask separately if the boundary should limit the analysis.
+- **Cities.** Ask which places to label. The existing renderer includes a fixed set of West Texas city labels for the Streamlit previews. For other cities, verify their names and coordinates from the user or an appropriate source. The CLI has no city-label setting, so offer a separately rendered map with the requested labels if needed.
+
+Record the overlay source and any conversion or separate rendering step when sharing the maps.
+
 ## Run and report
 
 1. Run `seisnetinsight validate --config <config.json> --json` and inspect the resolved settings, row counts, and warnings.
